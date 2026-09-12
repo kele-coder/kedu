@@ -274,7 +274,7 @@ async function recognize(src, hint = '') {
   render();
   try {
     const dataUrl = typeof src === 'string' ? src : await resizeImage(src); U.camera.photo = dataUrl; render();
-    const r = await KD_AI.recognizeFood(S.prefs, dataUrl.split(',')[1], 'image/jpeg', { hint, known: memNames() });
+    const r = await KD_AI.recognizeFood(S.prefs, dataUrl.split(',')[1], 'image/jpeg', { hint, known: memNames(), onStatus: t => { if (U.camera) { U.camera.status = t; const el = document.getElementById('camstatus'); if (el) el.textContent = t; } } });
     if (!U.camera) return; // 用户已关闭
     const items = (r.items || []).map(it => {
       const d = densityOf(it.name), mem = S.foodMemory[it.name];
@@ -536,7 +536,7 @@ function rProfile() {
     ${row('导入数据', '选择文件 ›', 'importData')}
     ${row('重新走一遍引导', '›', 'restart')}
     ${row('清空全部数据', '›', 'wipe')}
-    <div class="muted" style="font-size:11px;padding:16px 0 24px" data-act="reloadApp">刻度 v9 · 数据只存在这台手机的浏览器里 · 点此检查更新</div>
+    <div class="muted" style="font-size:11px;padding:16px 0 24px" data-act="reloadApp">刻度 v10 · 数据只存在这台手机的浏览器里 · 点此检查更新</div>
   </div>${nav()}</div>`;
 }
 
@@ -822,7 +822,7 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) { en
 
 // 每秒：训练计时 / 休息倒计时（只改文字，不整页重绘）
 setInterval(() => {
-  if (U.screen === 'camera' && U.camera && U.camera.busy) { const el = document.getElementById('camstatus'); if (el) el.textContent = `识别中… ${Math.round((Date.now() - U.camera.t0) / 1000)}s`; }
+  if (U.screen === 'camera' && U.camera && U.camera.busy) { const el = document.getElementById('camstatus'); if (el) el.textContent = `${U.camera.status || '识别中…'} ${Math.round((Date.now() - U.camera.t0) / 1000)}s`; }
   if (U.screen !== 'workout' || !S.active) return;
   const a = S.active, el = document.getElementById('elapsed'); if (el) el.textContent = mmss(elapsed());
   if (a.resting) {

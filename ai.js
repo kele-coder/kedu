@@ -19,21 +19,40 @@ async function callClaude(apiKey, { system, content, schema: sc, effort, signal 
   if (j.stop_reason === 'refusal') throw new Error('模型拒绝了这次请求');
   return parseJSON((j.content || []).filter(b => b.type === 'text').map(b => b.text).join(''));
 }
-async function callGemini(apiKey, { system, content, schema: sc, signal }) {
-  const parts = content.map(b => b.type === 'image' ? { inline_data: { mime_type: b.source.media_type, data: b.source.data } } : { text: b.text });
-  const body = { system_instruction: { parts: [{ text: system }] }, contents: [{ role: 'user', parts }], generationConfig: { responseMimeType: 'application/json', responseJsonSchema: sc.schema } };
+const GEMINI_MODELS = [GEMINI_MODEL, 'gemini-3.5-flash', 'gemini-2.5-flash']; // 高峰限流时依次降级
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const transient = (status, msg) => status === 429 || status === 503 || status === 500 || /high demand|overloaded|RESOURCE_EXHAUSTED|UNAVAILABLE|try again/i.test(msg || '');
+async function geminiOnce(apiKey, model, body, signal) {
   const opts = () => ({ method: 'POST', signal, headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey }, body: JSON.stringify(body) });
-  let r = await fetch(GEMINI_API(GEMINI_MODEL), opts());
-  if (r.status === 400) { // 个别 schema 关键字不被接受时退回：只要求 JSON，靠提示词约束
-    delete body.generationConfig.responseJsonSchema; body.contents[0].parts.push({ text: '\n只输出符合以下 JSON Schema 的 JSON：' + JSON.stringify(sc.schema) });
-    r = await fetch(GEMINI_API(GEMINI_MODEL), opts());
+  let r = await fetch(GEMINI_API(model), opts());
+  if (r.status === 400 && body.generationConfig.responseJsonSchema) { // 个别 schema 关键字不被接受时退回：只要求 JSON，靠提示词约束
+    const b2 = JSON.parse(JSON.stringify(body)); delete b2.generationConfig.responseJsonSchema; b2.contents[0].parts.push({ text: '\n只输出符合以下 JSON Schema 的 JSON：' + JSON.stringify(body.generationConfig.responseJsonSchema) });
+    r = await fetch(GEMINI_API(model), { ...opts(), body: JSON.stringify(b2) });
   }
-  if (!r.ok) { let msg = `HTTP ${r.status}`; try { const j = await r.json(); msg = j.error?.message || msg; } catch (_) {} throw new Error(msg); }
+  if (!r.ok) { let msg = `HTTP ${r.status}`; try { const j = await r.json(); msg = j.error?.message || msg; } catch (_) {} const e = new Error(msg); e.status = r.status; throw e; }
   const j = await r.json();
   const c = j.candidates && j.candidates[0];
   if (!c || !c.content) throw new Error(c && c.finishReason ? `模型未返回内容（${c.finishReason}）` : '模型未返回内容');
   return parseJSON((c.content.parts || []).map(p => p.text || '').join(''));
 }
+async function callGemini(apiKey, { system, content, schema: sc, signal, onStatus }) {
+  const parts = content.map(b => b.type === 'image' ? { inline_data: { mime_type: b.source.media_type, data: b.source.data } } : { text: b.text });
+  const body = { system_instruction: { parts: [{ text: system }] }, contents: [{ role: 'user', parts }], generationConfig: { responseMimeType: 'application/json', responseJsonSchema: sc.schema } };
+  let last;
+  for (let i = 0; i < GEMINI_MODELS.length; i++) {
+    const model = GEMINI_MODELS[i];
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try { return await geminiOnce(apiKey, model, body, signal); }
+      catch (e) {
+        if (e.name === 'AbortError' || !transient(e.status, e.message)) throw e;
+        last = e; if (onStatus) onStatus(attempt === 0 ? `${model.replace('gemini-', '')} 繁忙，重试…` : `换 ${(GEMINI_MODELS[i + 1] || '').replace('gemini-', '') || '…'}`);
+        if (attempt === 0) await sleep(1500);
+      }
+    }
+  }
+  throw new Error('Gemini 各模型都在限流：' + (last ? last.message.slice(0, 80) : '') + ' · 稍等一分钟再试');
+}
+async function callClaudeWrap(apiKey, req) { return callClaude(apiKey, req); }
 let lastError = '';
 async function call(prefs, req, timeoutMs = 90000) {
   const key = (keyOf(prefs) || '').trim();
@@ -54,7 +73,7 @@ async function ping(prefs) {
 const schema = (properties, required) => ({ type: 'json_schema', schema: { type: 'object', properties, required, additionalProperties: false } });
 
 // 图片 → 食物列表 v2：模型只负责认菜、估克数、给每 100g 密度与置信度；热量由 app 按本地营养表/密度计算。
-async function recognizeFood(prefs, base64, mediaType, { hint = '', known = [] } = {}) {
+async function recognizeFood(prefs, base64, mediaType, { hint = '', known = [], onStatus } = {}) {
   const per100 = { type: 'object', additionalProperties: false, required: ['kcal', 'protein', 'carbs', 'fat'], properties: { kcal: { type: 'number' }, protein: { type: 'number' }, carbs: { type: 'number' }, fat: { type: 'number' } } };
   const items = {
     type: 'array', items: { type: 'object', additionalProperties: false,
@@ -82,7 +101,7 @@ async function recognizeFood(prefs, base64, mediaType, { hint = '', known = [] }
       { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } },
       { type: 'text', text: parts.join('\n') },
     ],
-    effort: 'medium', schema: schema({ items }, ['items']),
+    effort: 'medium', schema: schema({ items }, ['items']), onStatus,
   });
 }
 
