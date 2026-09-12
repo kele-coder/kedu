@@ -1,6 +1,6 @@
 // 刻度 · 健身助手 App（PWA）。单页、无框架；状态存 localStorage。
 (() => {
-const { EX, exInfo, altOf, homeOf, gymOf, SESSIONS, TEMPLATES, FOOD_DB, OB } = KD_DATA;
+const { EX, exInfo, altOf, homeOf, gymOf, SESSIONS, TEMPLATES, TEMPLATES_BEGINNER, FOOD_DB, OB } = KD_DATA;
 const root = document.getElementById('app');
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const fmt = n => Math.round(n).toLocaleString('en-US');
@@ -41,7 +41,7 @@ const I = {
 const KEY = 'kedu.v1';
 const fresh = () => ({
   v: 1, onboarded: false, ob: { step: 0, answers: {} },
-  profile: { goal: '减脂', sex: '男', age: 30, height: 175, weight: 72, target: 68, activity: '轻度活动', place: '健身房', days: 5, kcalOverride: 0, core: true },
+  profile: { goal: '减脂', sex: '男', age: 30, height: 175, weight: 72, target: 68, activity: '轻度活动', place: '健身房', days: 5, kcalOverride: 0, core: true, level: '进阶' },
   prefs: { theme: 'auto', restMode: 'auto', restSec: 0, provider: 'gemini', apiKey: '', geminiKey: '', extraBurn: 0, sound: true },
   week: null, nextWeek: null, history: [], logs: {}, meals: {}, weights: [], burn: {}, progress: {}, customFoods: [], recent: [], foodMemory: {}, active: null,
 });
@@ -50,6 +50,7 @@ if (!S || S.v !== 1) S = fresh();
 if (!S.prefs.provider) Object.assign(S.prefs, { provider: S.prefs.apiKey ? 'claude' : 'gemini', geminiKey: '' });
 if (!S.foodMemory) S.foodMemory = {};
 if (S.profile.core == null) S.profile.core = true;
+if (!S.profile.level) S.profile.level = '进阶';
 const save = () => { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { toast('保存失败：' + e.message); } };
 
 // 界面临时状态（不持久化）
@@ -102,17 +103,19 @@ const e1rm = (kg, reps) => kg * (1 + reps / 30);
 
 // ─── 周计划
 function buildWeek(start, progress = S.progress, place = S.profile.place) {
-  const tpl = TEMPLATES[S.profile.days] || TEMPLATES[5];
+  const lv = S.profile.level, beginner = lv === '新手', veteran = lv === '老手';
+  const tpl = beginner ? (TEMPLATES_BEGINNER[Math.min(4, Math.max(2, S.profile.days))]) : (TEMPLATES[S.profile.days] || TEMPLATES[5]);
   const days = [];
   for (let i = 0; i < 7; i++) {
     const date = addDays(start, i), t = tpl.find(x => x[0] === i + 1);
     if (!t) { days.push({ date, name: '休息', place: '', mins: 0, ex: [] }); continue; }
     const s = SESSIONS[t[1]], home = place === '在家';
     const exList = S.profile.core ? s.ex : s.ex.filter(e => exInfo(e.name).cat !== 'core');
-    days.push({ date, name: S.profile.core ? t[1] : t[1].replace(/ \+ 核心$/, ''), place: home ? '在家' : '健身房', mins: s.mins, ex: exList.map(e => {
+    days.push({ date, name: S.profile.core ? t[1] : t[1].replace(/ \+ 核心$/, ''), place: home ? '在家' : '健身房', mins: s.mins + (veteran ? 10 : 0), ex: exList.map((e, j) => {
       const name = home ? homeOf(e.name) : e.name;
       const kg = progress[name] != null ? progress[name] : (name === e.name ? e.kg : 0);
-      return { name, sets: e.sets, reps: e.reps, kg, ...(e.unit ? { unit: e.unit } : {}) };
+      const sets = veteran && j < 2 && !e.unit ? e.sets + 1 : e.sets; // 老手：主项多 1 组
+      return { name, sets, reps: e.reps, kg, ...(e.unit ? { unit: e.unit } : {}) };
     }) });
   }
   return { start, no: S.history.length + 1, days, note: '' };
@@ -308,7 +311,7 @@ function planContext(request) {
   const st = weekStats(), p = S.profile;
   const recent = Object.keys(S.logs).sort().slice(-12).map(d => ({ date: d, session: S.logs[d].name, done: S.logs[d].done, sets: S.logs[d].sets.map(x => `${x.ex} ${x.unit ? x.reps + x.unit : x.kg + 'kg×' + x.reps}`) }));
   return { profile: { ...p, weight: latestWeight() }, targets: targets(), thisWeek: S.week.days.map(d => ({ dow: dow(d.date), name: d.name, place: d.place, ex: d.ex, status: dayStatus(d) })), stats: st, recentLogs: recent, bestLifts: prs().map(x => `${x.name} ${x.kg}kg×${x.reps}`), progress: S.progress,
-    rules: `每周训练 ${p.days} 天，其余休息；场地 ${p.place}；${p.core ? '可以安排核心训练' : '不要安排任何核心/腹肌动作（cat=core 的动作一律不用）'}；${p.days === 3 ? '3 天用推/拉/腿三分化' : p.days === 4 ? '4 天用上/下肢分化' : p.days === 6 ? '6 天用推拉腿×2' : '5 天：胸背 / 下肢 / 肩臂 / 有氧 / 下肢'}`,
+    rules: `训练水平：${p.level}${p.level === '新手' ? '（新手：全身训练、最多 4 天、每次 5 个动作以内、每动作 2–3 组、每肌群每周 10 组左右、起始重量保守、不排高难度动作如杠铃深蹲/引体向上，可用高脚杯深蹲/高位下拉代替）' : p.level === '老手' ? '（老手：每肌群每周 15–20 组，主项 4–5 组，可用 6 天推拉腿）' : '（进阶：每肌群每周 12–16 组，分化训练）'}；每周训练 ${p.days} 天，其余休息；场地 ${p.place}；${p.core ? '可以安排核心训练' : '不要安排任何核心/腹肌动作（cat=core 的动作一律不用）'}；${p.days === 3 ? '3 天用推/拉/腿三分化' : p.days === 4 ? '4 天用上/下肢分化' : p.days === 6 ? '6 天用推拉腿×2' : '5 天：胸背 / 下肢 / 肩臂 / 有氧 / 下肢'}`,
     userRequest: request || '' };
 }
 async function generateNext(request = '') {
@@ -361,7 +364,7 @@ function rOnboard() {
   } else {
     const T = targets();
     body = `<div class="h" style="font-size:22px;line-height:1.2;margin-top:8px">好了。本周计划已生成。</div>
-    <div class="muted" style="font-size:13px;line-height:1.6">${S.profile.days} 天 · ${S.profile.place} · 每日 ${fmt(T.kcal)} kcal（基础代谢 ${fmt(T.bmr)} · 日常消耗 ${fmt(T.tdee)}）· 蛋白 ${T.protein}g · 碳水 ${T.carbs}g · 脂肪 ${T.fat}g。随时可在「我」里改。</div>`;
+    <div class="muted" style="font-size:13px;line-height:1.6">${(S.ob.answers.level || '').startsWith('新手') && S.ob.answers.days > 4 ? '新手前几个月 4 天以内的全身训练效果最好，已按 4 天安排，多出的天用来走路和恢复。' : ''}${(S.ob.answers.level || '').startsWith('新手') ? Math.min(4, S.ob.answers.days) : S.ob.answers.days} 天 · ${S.profile.place} · 每日 ${fmt(T.kcal)} kcal（基础代谢 ${fmt(T.bmr)} · 日常消耗 ${fmt(T.tdee)}）· 蛋白 ${T.protein}g · 碳水 ${T.carbs}g · 脂肪 ${T.fat}g。随时可在「我」里改。</div>`;
   }
   return `<div class="screen">${topbar('刻度', `设置 · ${Math.min(step + 1, OB.length + 1)} / ${OB.length + 1}`)}
   <div style="display:flex;gap:3px;padding:10px 20px 0">${bars}</div>
@@ -474,6 +477,7 @@ function rProfile() {
     ${row('日常消耗（TDEE）· 基础代谢', `${fmt(T.tdee)} · ${fmt(T.bmr)}`, '')}
     ${row('蛋白 / 碳水 / 脂肪', `${T.protein} / ${T.carbs} / ${T.fat} g`, '')}
     ${row('目标', p.goal, 'cycle', 'data-k="goal"')}
+    ${row('训练经验', p.level === '新手' ? '新手 · 低量全身' : p.level === '老手' ? '老手 · 主项加量' : '进阶 · 分化', 'cycle', 'data-k="level"')}
     ${row('日常活动', p.activity, 'cycle', 'data-k="activity"')}
     ${row('每周训练天数', p.days, 'cycle', 'data-k="days"')}
     ${row('训练场地', p.place, 'cycle', 'data-k="place"')}
@@ -495,7 +499,7 @@ function rProfile() {
     ${row('导入数据', '选择文件 ›', 'importData')}
     ${row('重新走一遍引导', '›', 'restart')}
     ${row('清空全部数据', '›', 'wipe')}
-    <div class="muted" style="font-size:11px;padding:16px 0 24px" data-act="reloadApp">刻度 v7 · 数据只存在这台手机的浏览器里 · 点此检查更新</div>
+    <div class="muted" style="font-size:11px;padding:16px 0 24px" data-act="reloadApp">刻度 v8 · 数据只存在这台手机的浏览器里 · 点此检查更新</div>
   </div>${nav()}</div>`;
 }
 
@@ -641,7 +645,7 @@ function render() {
 }
 
 // ─── 动作（事件委托）
-const cycles = { goal: ['减脂', '增肌', '保持健康'], activity: ['久坐', '轻度活动', '中度活动'], days: [3, 4, 5, 6], place: ['健身房', '在家', '两者都有'] };
+const cycles = { level: ['新手', '进阶', '老手'], goal: ['减脂', '增肌', '保持健康'], activity: ['久坐', '轻度活动', '中度活动'], days: [3, 4, 5, 6], place: ['健身房', '在家', '两者都有'] };
 const numFields = { height: ['身高 cm', 120, 230], target: ['目标体重 kg', 30, 250], age: ['年龄', 14, 80], kcalOverride: ['每日热量目标 kcal（0 = 自动计算）', 0, 6000], restSec: ['固定休息秒数（0 = 按动作建议）', 0, 600] };
 const go = s => { U.screen = s; U.exDetail = null; render(); };
 const A = {
@@ -650,7 +654,7 @@ const A = {
   obPick: d => { const q = OB[S.ob.step]; S.ob.answers[q.key] = q.key === 'days' ? +d.v : d.v; S.ob.step++; U.obDraft = null; save(); render(); },
   obStep: d => { const q = OB[S.ob.step], v = +(document.getElementById('obnum').value) || q.def; U.obDraft = +(Math.min(q.max, Math.max(q.min, v + (+d.d) * (q.step || 1))).toFixed(1)); render(); },
   obNum: () => { const q = OB[S.ob.step], v = +(document.getElementById('obnum').value); if (!(v >= q.min && v <= q.max)) { toast(`请输入 ${q.min}–${q.max}`); return; } S.ob.answers[q.key] = v; S.ob.step++; U.obDraft = null; save(); render(); },
-  obFinish: () => { const a = S.ob.answers; Object.assign(S.profile, { goal: a.goal, sex: a.sex, age: a.age, height: a.height, weight: a.weight, target: a.target, activity: a.activity, place: a.place, days: a.days });
+  obFinish: () => { const a = S.ob.answers; const level = (a.level || '进阶').split(' ')[0]; Object.assign(S.profile, { goal: a.goal, sex: a.sex, age: a.age, height: a.height, weight: a.weight, target: a.target, activity: a.activity, place: a.place, days: level === '新手' ? Math.min(4, a.days) : a.days, level });
     if (!S.weights.length) S.weights.push({ date: today(), kg: a.weight, bf: 0 }); S.onboarded = true; S.week = null; ensureWeek(); save(); go('home'); },
   restart: async () => { if (!await confirmAsk('重新走一遍引导', '会按新答案重建本周计划，训练/饮食/体重记录保留。', '开始')) return; S.ob = { step: 0, answers: {} }; S.onboarded = false; go('onboard'); },
   // 训练
@@ -725,7 +729,7 @@ const A = {
   restMode: d => { S.prefs.restMode = d.v; save(); render(); },
   toggleCore: () => { S.profile.core = !S.profile.core; save(); render(); toast('点「重新生成本周计划」立即生效，否则下周生效', 2600); },
   toggleSound: () => { S.prefs.sound = !S.prefs.sound; save(); render(); },
-  cycle: d => { const c = cycles[d.k]; S.profile[d.k] = c[(c.indexOf(S.profile[d.k]) + 1) % c.length]; save(); render(); if (d.k === 'days' || d.k === 'place') toast('下周生效；要立即生效点「重新生成本周计划」', 2600); },
+  cycle: d => { const c = cycles[d.k]; S.profile[d.k] = c[(c.indexOf(S.profile[d.k]) + 1) % c.length]; save(); render(); if (d.k === 'days' || d.k === 'place' || d.k === 'level') toast('下周生效；要立即生效点「重新生成本周计划」', 2600); },
   editNum: async d => { const [label, min, max] = numFields[d.k]; const cur = d.k === 'restSec' ? S.prefs.restSec : S.profile[d.k]; const v = await ask({ title: label, fields: [{ key: 'v', label, type: 'number', value: cur, min, max, step: d.k === 'target' ? 0.1 : 1 }], okLabel: '保存' }); if (!v) return; const n = +v.v; if (d.k === 'restSec') S.prefs.restSec = n; else S.profile[d.k] = n; save(); render(); },
   regen: async () => {
     const hasAI = KD_AI.hasKey(S.prefs);

@@ -18,7 +18,7 @@ let fails = 0; const ok = (c, m) => { console.log((c ? '✓ ' : '✗ ') + m); if
 
 // 1. 引导
 ok(KD.U.screen === 'onboard', '初始进入引导');
-act('obPick', e => e.textContent === '减脂'); act('obPick', e => e.textContent === '男');
+act('obPick', e => e.textContent === '减脂'); act('obPick', e => e.textContent.startsWith('进阶')); act('obPick', e => e.textContent === '男');
 for (const v of [32, 176, 72.4, 68]) { document.getElementById('obnum').value = v; act('obNum'); }
 act('obPick', e => e.textContent === '轻度活动'); act('obPick', e => e.textContent === '健身房'); act('obPick', e => e.textContent === '5');
 ok(text().includes('本周计划已生成'), '引导完成态');
@@ -84,6 +84,15 @@ act('genNext'); await new Promise(r => setTimeout(r, 50));
 ok(KD.S.nextWeek && KD.S.nextWeek.days.length === 7, '模板生成下周');
 const nextEx = KD.S.nextWeek.days.flatMap(d => d.ex).find(e => KD.S.progress[e.name] != null);
 ok(nextEx && nextEx.kg === KD.S.progress[nextEx.name], '下周计划沿用渐进后的重量: ' + (nextEx && nextEx.name + ' ' + nextEx.kg));
+
+// 5b. 新手分级（用「生成下周」检查整周模板，不受今天是周几影响）
+window.eval(`KD.S.profile.level='新手'; KD.S.profile.days=5;`);
+act('go', e => e.dataset.to === 'home'); act('go', e => e.dataset.to === 'progress'); act('openWeekly'); act('genNext'); await new Promise(r => setTimeout(r, 30));
+{ const wk = KD.S.nextWeek.days.filter(d => d.ex.length);
+  ok(wk.length === 4 && wk.every(d => d.name.startsWith('新手全身') && d.ex.length <= 5 && d.ex.every(e => e.sets <= 3)), '新手选 5 天 → 4 天低量全身（≤5 动作、≤3 组）: ' + wk.map(d => d.name).join('/')); }
+window.eval(`KD.S.profile.level='老手'; KD.S.profile.days=6;`); act('openWeekly'); act('genNext'); await new Promise(r => setTimeout(r, 30));
+{ const wk = KD.S.nextWeek.days.filter(d => d.ex.length); const d = wk[0]; ok(wk.length === 6 && d.ex[0].sets >= 5 && !d.name.startsWith('新手'), '老手 6 天：主项加 1 组 · ' + (d && d.name + ' ' + d.ex[0].name + ' ' + d.ex[0].sets + '组')); }
+window.eval(`KD.S.profile.level='进阶'; KD.S.profile.days=5; KD.S.nextWeek=null;`);
 
 // 6. 我 · 设置
 act('go', e => e.dataset.to === 'profile'); ok(text().includes('Mifflin') || text().includes('日常消耗'), '个人页');

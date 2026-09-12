@@ -104,6 +104,18 @@ const SESSIONS = {
   '全身 B': { mins: 50, ex: [T('罗马尼亚硬拉', 3, 10, 40), T('引体向上', 3, 6, 0), T('上斜哑铃卧推', 3, 10, 14), T('保加利亚箭步蹲', 3, 12, 0), T('卷腹', 3, 20, 0)] },
   '全身 C': { mins: 50, ex: [T('腿举', 3, 12, 80), T('高位下拉', 3, 12, 35), T('哑铃卧推', 3, 10, 14), T('臀推', 3, 10, 40), T('悬垂举腿', 3, 12, 0)] },
 };
+// 新手课程：每次 5 个动作、2–3 组、8–15 次，全周每肌群约 10 组（新手 10–12 组/周即可有效增长）
+const BEGINNER = {
+  '新手全身 A': { mins: 40, ex: [T('高脚杯深蹲', 3, 10, 8), T('哑铃卧推', 3, 10, 8), T('高位下拉', 3, 10, 25), T('哑铃推举', 2, 12, 5), T('平板支撑', 2, 30, 0, 's')] },
+  '新手全身 B': { mins: 40, ex: [T('腿举', 3, 12, 50), T('俯卧撑', 3, 10, 0), T('划船', 3, 10, 20), T('侧平举', 2, 15, 3), T('臀桥', 2, 15, 0)] },
+  '新手全身 C': { mins: 40, ex: [T('罗马尼亚硬拉', 3, 10, 25), T('上斜哑铃卧推', 3, 10, 8), T('弹力带划船', 3, 12, 0), T('弯举', 2, 12, 5), T('卷腹', 2, 15, 0)] },
+};
+Object.assign(SESSIONS, BEGINNER);
+const TEMPLATES_BEGINNER = {
+  2: [[1, '新手全身 A'], [4, '新手全身 B']],
+  3: [[1, '新手全身 A'], [3, '新手全身 B'], [5, '新手全身 C']],
+  4: [[1, '新手全身 A'], [2, '新手全身 B'], [4, '新手全身 C'], [5, '新手全身 A']],
+};
 const TEMPLATES = {
   3: [[1, '推'], [3, '拉'], [5, '腿']],
   4: [[1, '上肢'], [2, '下肢'], [4, '上肢'], [5, '下肢 + 核心']],
@@ -160,6 +172,7 @@ const DENSITY = {
 };
 const OB = [
   { key: 'goal', q: '目标？', opts: ['减脂', '增肌', '保持健康'], hint: '决定热量目标和训练比重。' },
+  { key: 'level', q: '练了多久？', opts: ['新手 · 不到半年', '进阶 · 半年到两年', '老手 · 两年以上'], hint: '新手用低量全身计划，进阶用分化，老手加量。' },
   { key: 'sex', q: '性别？', opts: ['男', '女'], hint: '用于基础代谢计算（Mifflin-St Jeor）。' },
   { key: 'age', q: '年龄？', type: 'number', unit: '岁', def: 30, min: 14, max: 80, hint: '' },
   { key: 'height', q: '身高？', type: 'number', unit: 'cm', def: 175, min: 120, max: 230, hint: '' },
@@ -167,7 +180,7 @@ const OB = [
   { key: 'target', q: '目标体重？', type: 'number', unit: 'kg', def: 68, min: 30, max: 250, step: 0.1, hint: '' },
   { key: 'activity', q: '训练之外的日常活动？', opts: ['久坐', '轻度活动', '中度活动'], hint: '办公室为主选久坐；经常走动选轻度。' },
   { key: 'place', q: '在哪练？', opts: ['健身房', '在家', '两者都有'], hint: '计划会给出对应版本。' },
-  { key: 'days', q: '每周能练几天？', opts: ['3', '4', '5', '6'], hint: '5 天：3 力量 + 1 有氧 + 1 全身。' },
+  { key: 'days', q: '每周能练几天？', opts: ['3', '4', '5', '6'], hint: '新手建议 3 天全身（最多 4 天）；5 天：3 力量 + 1 有氧 + 1 全身。' },
 ];
-return { EX, DEFAULT_INFO, exInfo, altOf, homeOf, gymOf, SESSIONS, TEMPLATES, FOOD_DB, OB, DENSITY };
+return { EX, DEFAULT_INFO, exInfo, altOf, homeOf, gymOf, SESSIONS, TEMPLATES, TEMPLATES_BEGINNER, FOOD_DB, OB, DENSITY };
 })();
