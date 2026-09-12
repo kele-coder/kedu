@@ -43,7 +43,7 @@ const fresh = () => ({
   v: 1, onboarded: false, ob: { step: 0, answers: {} },
   profile: { goal: '减脂', sex: '男', age: 30, height: 175, weight: 72, target: 68, activity: '轻度活动', place: '健身房', days: 5, kcalOverride: 0, core: true, level: '进阶' },
   prefs: { theme: 'auto', restMode: 'auto', restSec: 0, provider: 'gemini', apiKey: '', geminiKey: '', extraBurn: 0, sound: true, warmup: true, rpe: true, bar: 20 },
-  calib: null,
+  calib: null, hints: [], lastBackup: '',
   week: null, nextWeek: null, history: [], logs: {}, meals: {}, weights: [], burn: {}, progress: {}, customFoods: [], recent: [], foodMemory: {}, active: null,
 });
 let S; try { S = JSON.parse(localStorage.getItem(KEY)); } catch (_) { S = null; }
@@ -54,6 +54,8 @@ if (S.profile.core == null) S.profile.core = true;
 if (!S.profile.level) S.profile.level = '进阶';
 if (S.prefs.warmup == null) Object.assign(S.prefs, { warmup: true, rpe: true, bar: 20 });
 if (S.calib === undefined) S.calib = null;
+if (!S.hints) S.hints = [];
+if (S.lastBackup == null) S.lastBackup = '';
 const save = () => { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { toast('保存失败：' + e.message); } };
 
 // 界面临时状态（不持久化）
@@ -225,6 +227,7 @@ function finishWorkout() {
     const s = a.sets.filter(x => x.ex === e.name);
     const inc = exInfo(e.name).inc;
     const hard = s.some(x => x.rpe >= 9.5);
+    if (s.length && stalled(e.name)) notes.push(`${e.name} 连续 3 次没进步，去「训练」页点它处理`);
     if (s.length >= e.sets && s.every(x => x.reps >= e.reps && x.kg >= e.kg) && inc > 0 && !hard) {
       const next = +(Math.max(...s.map(x => x.kg)) + inc).toFixed(1); S.progress[e.name] = next; notes.push(`${e.name} 下次 ${next}kg`);
       S.week.days.forEach((dd, i) => { if (i > a.dayIdx) dd.ex.forEach(x => { if (x.name === e.name) x.kg = next; }); });
@@ -233,6 +236,14 @@ function finishWorkout() {
   log.notes = notes;
   S.active = null; save(); lockScreen(false);
   U.summary = log; U.screen = 'summary'; render();
+}
+// 停滞：某动作最近 3 次正式记录，最大重量和最大次数都没提高
+function stalled(name) {
+  const sessions = Object.keys(S.logs).sort().map(d => S.logs[d].sets.filter(x => x.ex === name && !x.unit)).filter(s => s.length).slice(-3);
+  if (sessions.length < 3) return false;
+  const score = s => Math.max(...s.map(x => e1rm(x.kg, x.reps)));
+  const a = score(sessions[0]), b = score(sessions[1]), c = score(sessions[2]);
+  return c <= a + 0.01 && b <= a + 0.01;
 }
 function prs() { // 每个动作的最佳估算 1RM
   const best = {};
@@ -282,6 +293,15 @@ async function recognize(src, hint = '') {
       return { n: it.name, grams: Math.max(5, it.grams || 100), g0: Math.max(5, it.grams || 100), per100, src: mem ? '常吃' : d ? '营养表' : 'AI', conf: it.confidence || 'medium', reason: it.reason || '', bbox: it.bbox, alts: (it.alternatives || []).map(a => ({ name: a.name, per100kcal: a.per100kcal })), memGrams: mem?.grams };
     });
     if (!items.length) { U.camera.busy = false; U.camera.error = '没识别出食物。换个角度、离近一点，或补一句说明再试。'; render(); return; }
+    if (hint) { S.hints = [hint, ...S.hints.filter(h => h !== hint)].slice(0, 6); save(); }
+    U.camera.busy = false; U.camera.status = '';
+    for (const it of items) { // 把握不大的先问一句（识别后再推理）
+      if (it.conf !== 'low' || !it.alts.length || !U.camera) continue;
+      const pick = await ask({ title: '这一份是？', note: it.reason || '模型不太确定，选一个更准。', options: [{ label: it.n, sub: '模型判断', value: it.n }, ...it.alts.map(a => ({ label: a.name, value: a.name })), { label: '都不是，稍后手动改', value: '' }] });
+      if (!U.camera) return;
+      if (pick && pick !== it.n) { const a = it.alts.find(x => x.name === pick); const dd = densityOf(pick), mem = S.foodMemory[pick]; it.alts = [{ name: it.n, per100kcal: it.per100.kcal }, ...it.alts.filter(x => x.name !== pick)]; it.n = pick; it.per100 = mem?.per100 || (dd ? { kcal: dd.v[0], protein: dd.v[1], carbs: dd.v[2], fat: dd.v[3] } : { ...it.per100, kcal: a ? a.per100kcal : it.per100.kcal }); it.src = mem ? '常吃' : dd ? '营养表' : 'AI'; }
+      if (pick !== null) it.conf = 'high';
+    }
     open_('result', { photo: dataUrl, items, open: -1, label, from, hint }); U.camera = null; U.screen = 'result'; render();
   } catch (e) {
     if (!U.camera) return;
@@ -422,6 +442,7 @@ function rHome() {
     <div class="cell" data-act="weigh"><div class="row"><div class="kicker">体重</div><span class="link">+ 记录</span></div><div class="big" style="font-size:36px;margin:8px 0 6px">${cur.toFixed(1)}</div><div class="muted" style="font-size:12px">kg · ${ws.length > 1 ? '较上次 ' + sign(delta) : '趋势 ' + (tr.length ? tr[tr.length - 1].toFixed(1) : '—')}</div><div style="margin-top:8px">${spark(ws.slice(-8).map(w => w.kg), 120, 24)}</div></div>
   </div>
   <div class="grid3" style="border-bottom:2px solid var(--line)">${[['蛋白', sum(meals, 'p'), T.protein], ['碳水', sum(meals, 'c'), T.carbs], ['脂肪', sum(meals, 'f'), T.fat]].map(([l, v, t], i) => `<div style="padding:12px 16px;${i < 2 ? 'border-right:2px solid var(--line)' : ''}"><div class="kicker">${l}</div><div style="font-size:15px;margin-top:4px"><b>${v}</b> / ${t}g</div></div>`).join('')}</div>
+  ${backupDue() ? `<div style="padding:12px 20px;border-bottom:2px solid var(--line);font-size:12px" data-act="exportData"><span class="acc" style="font-weight:600">超过一周没备份</span><span class="muted"> · 数据只在这台手机里，点此把 JSON 发给自己 ›</span></div>` : ''}
   ${S.nextWeek ? `<div style="padding:12px 20px" class="muted">下周计划已就绪，周一自动切换。</div>` : ''}
   </div>${nav()}</div>`;
 }
@@ -438,7 +459,7 @@ function rPlan() {
   const exRows = sel.ex.map((e, j) => {
     const done = log ? log.sets.filter(x => x.ex === e.name) : [];
     return `<div class="plan-ex"><div class="nm" data-act="exDetail" data-name="${esc(e.name)}">${I.tri}<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${e.name}</span></div>
-    <span class="spec" data-act="editEx" data-j="${j}">${done.length ? `<b style="color:var(--fg)">${done.length}/${e.sets}</b> · ` : ''}${e.sets} × ${e.reps}${e.unit || ''}${e.kg ? ` · ${e.kg}kg` : ''}</span><span class="link" data-act="swapEx" data-j="${j}">换</span></div>`;
+    <span class="spec" data-act="editEx" data-j="${j}">${done.length ? `<b style="color:var(--fg)">${done.length}/${e.sets}</b> · ` : ''}${e.sets} × ${e.reps}${e.unit || ''}${e.kg ? ` · ${e.kg}kg` : ''}</span>${!done.length && !e.unit && stalled(e.name) ? `<span data-act="unstall" data-j="${j}" style="font-size:10px;font-weight:800;color:var(--acc-text);border:1px solid var(--acc);padding:1px 4px">停滞</span>` : ''}<span class="link" data-act="swapEx" data-j="${j}">换</span></div>`;
   }).join('');
   return `<div class="screen">${topbar(`第 ${S.week.no} 周`, `${S.profile.goal} · ${S.profile.days} 练 ${7 - S.profile.days} 休${S.week.note ? ' · AI' : ''}`)}
   <div style="display:grid;grid-template-columns:repeat(7,1fr);border-bottom:2px solid var(--line)">${cells}</div>
@@ -477,6 +498,7 @@ function rProgress() {
   const cur = ws.length ? ws[ws.length - 1] : null, trendNow = tr.length ? tr[tr.length - 1] : null;
   const first = ws.length ? ws[0].kg : null;
   const bf = [...ws].reverse().find(w => w.bf), bfOld = ws.filter(w => w.bf && w.date <= addDays(t, -28)).pop();
+  const wa = [...ws].reverse().find(w => w.waist), waOld = ws.filter(w => w.waist && w.date <= addDays(t, -28)).pop();
   const allLogs = Object.values(S.logs);
   const allPlanned = S.history.reduce((a, w) => a + w.days.filter(d => d.ex.length).length, 0) + S.week.days.filter(d => d.ex.length && d.date <= t).length;
   const doneN = allLogs.filter(l => l.sets.length).length;
@@ -489,7 +511,7 @@ function rProgress() {
     <div class="row" style="align-items:baseline;margin:6px 0 8px"><span class="big" style="font-size:36px">${trendNow ? trendNow.toFixed(1) : '—'}</span><span class="muted" style="font-size:12px;text-align:right">${cur ? `最新 ${cur.kg.toFixed(1)} · 累计 ${sign(cur.kg - first)} kg` : '还没有记录'}<br>目标 ${S.profile.target.toFixed(1)}</span></div>
     <div style="width:100%;overflow:hidden">${spark(ws.slice(-30).map(w => w.kg), 320, 72, 8, 4, tr.slice(-30))}</div>
     <div class="grid2" style="border-top:2px solid var(--line);border-bottom:2px solid var(--line);margin-top:12px">
-      <div style="padding:12px 12px 12px 0;border-right:2px solid var(--line)"><div class="kicker">体脂率</div><div class="big" style="font-size:26px;margin:6px 0 4px">${bf ? bf.bf.toFixed(1) + '%' : '—'}</div><div class="muted" style="font-size:11px">${bf && bfOld ? sign(bf.bf - bfOld.bf) + ' / 4 周' : '记录体重时可一并录入'}</div></div>
+      <div style="padding:12px 12px 12px 0;border-right:2px solid var(--line)"><div class="kicker">体脂率</div><div class="big" style="font-size:26px;margin:6px 0 4px">${bf ? bf.bf.toFixed(1) + '%' : '—'}</div><div class="muted" style="font-size:11px">${bf && bfOld ? sign(bf.bf - bfOld.bf) + ' / 4 周' : wa ? `腰围 ${wa.waist} cm${waOld ? ' · ' + sign(wa.waist - waOld.waist) + ' / 4 周' : ''}` : '记录体重时可一并录入'}</div></div>
       <div style="padding:12px 0 12px 12px"><div class="kicker">训练完成率</div><div class="big" style="font-size:26px;margin:6px 0 4px">${allPlanned ? Math.round(doneN / allPlanned * 100) : 0}%</div><div class="muted" style="font-size:11px">${doneN} / ${allPlanned} 次</div></div>
     </div>
     <div class="kicker" style="margin:14px 0 8px">每日热量差 · 近 7 天</div>
@@ -532,11 +554,12 @@ function rProfile() {
     ${row('测试 AI 连接', `${KD_AI.model(S.prefs)} ›`, 'pingAI')}
     ${KD_AI.lastError() ? `<div class="muted" style="font-size:11px;padding:6px 0;word-break:break-all">最近错误：${esc(KD_AI.lastError())}</div>` : ''}
     ${row('手表 / 运动手环', '不支持自动同步 · 在饮食页手动录消耗', '')}
-    ${row('导出数据', 'JSON ›', 'exportData')}
+    ${row('备份 · 发给自己', `${S.lastBackup ? '上次 ' + md(S.lastBackup) : '从未备份'} · 分享 JSON ›`, 'exportData')}
+    ${row('导出为文件', 'JSON ›', 'exportFile')}
     ${row('导入数据', '选择文件 ›', 'importData')}
     ${row('重新走一遍引导', '›', 'restart')}
     ${row('清空全部数据', '›', 'wipe')}
-    <div class="muted" style="font-size:11px;padding:16px 0 24px" data-act="reloadApp">刻度 v12 · 数据只存在这台手机的浏览器里 · 点此检查更新</div>
+    <div class="muted" style="font-size:11px;padding:16px 0 24px" data-act="reloadApp">刻度 v13 · 数据只存在这台手机的浏览器里 · 点此检查更新</div>
   </div>${nav()}</div>`;
 }
 
@@ -550,7 +573,7 @@ function rCamera() {
     ${c.busy && c.photo ? '<div class="scanline"></div>' : ''}
     ${c.error ? `<div style="position:absolute;left:0;right:0;bottom:0;background:rgba(32,30,29,.92);padding:12px 14px;font-size:13px;line-height:1.5;border-top:2px solid var(--acc)">${esc(c.error)}${c.photo ? `<div style="margin-top:8px"><span class="link" data-act="retryRecog" style="color:#ff9783">再试一次 ›</span></div>` : ''}</div>` : ''}
   </div>
-  <div style="padding:10px 20px 0;${c.busy ? 'opacity:.5;pointer-events:none' : ''}"><input type="text" placeholder="补充说明（可选）：如 米饭半碗 / 外卖 / 两人份" value="${esc(c.hint || '')}" data-inp="hint" style="background:#2d2b2b;color:#f3f2f2;font-size:13px;padding:9px 12px"></div>
+  <div style="padding:10px 20px 0;${c.busy ? 'opacity:.5;pointer-events:none' : ''}"><input type="text" placeholder="补充说明（可选）：如 沙县 / 米饭半碗 / 两人份" value="${esc(c.hint || '')}" data-inp="hint" id="hint" style="background:#2d2b2b;color:#f3f2f2;font-size:13px;padding:9px 12px">${S.hints.length ? `<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">${S.hints.map(h => `<span class="chip" data-act="useHint" data-h="${esc(h)}" style="margin:0;border-color:rgba(243,242,242,.4);color:#f3f2f2;padding:4px 8px;font-size:12px">${esc(h)}</span>`).join('')}</div>` : ''}</div>
   <div class="grid3" style="align-items:center;padding:8px 20px calc(20px + var(--sab))">
     <div style="display:flex;flex-direction:column;gap:14px;font-size:13px;font-weight:600"><label>相册<input type="file" accept="image/*" id="galfile" class="hidden" ${c.busy ? 'disabled' : ''}></label><span data-act="openSearch">搜索</span></div>
     <div style="display:flex;justify-content:center"><label style="width:72px;height:72px;border:2px solid #fff;display:flex;align-items:center;justify-content:center;${c.busy ? 'opacity:.5' : ''}"><div style="width:56px;height:56px;background:${c.busy ? 'var(--acc)' : '#f3f2f2'}"></div><input type="file" accept="image/*" capture="environment" id="camfile" class="hidden" ${c.busy ? 'disabled' : ''}></label></div>
@@ -646,7 +669,8 @@ function rWeigh() {
   return `<div class="sheet-mask" data-act="closeWeigh"><div class="sheet ${U.anim.has('weigh') ? 'enter' : ''}" data-stop="1" style="padding:14px 20px 16px">
     <div class="row"><span class="kicker">今日 · 晨起空腹 · ${md(today())}</span><span data-act="closeWeigh" style="width:24px;height:24px;display:flex">${I.x}</span></div>
     <div class="grid2" style="margin:14px 0 10px">${[['体重 kg', w.kg, 'wKg'], ['体脂 %', w.bf, 'wBf']].map(([l, v, k], i) => `<div style="${i ? 'padding-left:12px' : 'border-right:2px solid var(--line);padding-right:12px'}"><div class="kicker">${l}</div><div class="big" style="font-size:48px;margin:8px 0 10px">${v.toFixed(1)}</div><div style="display:flex;gap:8px"><div class="step" data-act="${k}" data-d="-0.1">${I.minus}</div><div class="step" data-act="${k}" data-d="0.1">${I.plus}</div></div></div>`).join('')}</div>
-    <div class="muted" style="font-size:12px;margin-bottom:12px">同一天重复保存会覆盖。体脂没测就留原值。</div>${btn('保存', 'saveWeigh', '', I.check)}</div></div>`;
+    <div class="row" style="border-top:1px solid var(--line);padding:10px 0"><div><div class="kicker">腰围 cm · 可选</div><div class="big" style="font-size:28px;margin-top:4px">${w.waist ? w.waist.toFixed(1) : '—'}</div></div><div style="display:flex;gap:8px"><div class="step" data-act="wWaist" data-d="-0.5" style="height:40px">${I.minus}</div><div class="step" data-act="wWaist" data-d="0.5" style="height:40px">${I.plus}</div></div></div>
+    <div class="muted" style="font-size:12px;margin-bottom:12px">同一天重复保存会覆盖。体脂/腰围没测就留原值；腰围在肚脐水平、呼气末量，减脂期它比体脂秤靠谱。</div>${btn('保存', 'saveWeigh', '', I.check)}</div></div>`;
 }
 function rWeekly() {
   const w = U.weekly, st = w.stats, rv = w.review;
@@ -704,6 +728,12 @@ const A = {
   exDetail: d => { open_('exDetail', d.name); U.video = false; render(); },
   closeDetail: () => { U.exDetail = null; U.video = false; render(); },
   playVideo: () => { if (exInfo(U.exDetail).video) { U.video = true; render(); } else toast('该动作暂无示范视频'); },
+  unstall: async d => { const day = S.week.days[U.selDay], e = day.ex[+d.j];
+    const v = await ask({ title: `${e.name} · 连续 3 次没进步`, note: '常见原因：恢复不够、次数区间太窄、动作已适应。三种处理任选：', options: [{ label: `减 10% 重练：${+(Math.round(e.kg * 0.9 / 2.5) * 2.5).toFixed(1)} kg × ${e.reps}`, sub: '退一步再线性往上加', value: 'deload' }, { label: `换次数区间：${e.kg} kg × ${e.reps + 3}`, sub: '同重量做更多次，达标后再加重', value: 'reps' }, { label: `换成 ${altOf(e.name)}`, sub: '换个刺激角度', value: 'swap' }] });
+    if (!v) return;
+    const apply = x => { if (v === 'deload') x.kg = +(Math.round(x.kg * 0.9 / 2.5) * 2.5).toFixed(1); else if (v === 'reps') x.reps += 3; };
+    if (v === 'swap') { A.swapEx(d); return; }
+    S.week.days.forEach(dd => dd.ex.forEach(x => { if (x.name === e.name && dd.date >= today()) apply(x); })); S.progress[e.name] = e.kg; save(); render(); toast('已调整，之后同动作的日子一并改了'); },
   swapEx: d => { const day = S.week.days[U.selDay], e = day.ex[+d.j]; const n = altOf(e.name); if (n === e.name) { toast('没有备选动作'); return; } e.name = n; e.kg = S.progress[n] ?? (exInfo(n).inc ? e.kg : 0); save(); render(); toast(`已换成 ${n}`); },
   editEx: async d => { const day = S.week.days[U.selDay], e = day.ex[+d.j]; const v = await ask({ title: e.name, fields: [{ key: 's', label: '组数', type: 'number', value: e.sets, min: 1, max: 20 }, { key: 'r', label: e.unit ? `时长 ${e.unit}` : '次数', type: 'number', value: e.reps, min: 1, max: 999 }, ...(e.unit ? [] : [{ key: 'k', label: '重量', unit: 'kg', type: 'number', value: e.kg, min: 0, max: 500, step: 0.5 }])], okLabel: '保存' }); if (!v) return; e.sets = +v.s; e.reps = +v.r; if (!e.unit) e.kg = +v.k; save(); render(); },
   addEx: async () => { const cat = { lower: '下肢', upper: '上肢', core: '核心', cardio: '有氧' }; const n = await ask({ title: '加动作', options: Object.keys(EX).map(k => ({ label: k, sub: `${cat[EX[k].cat]} · ${EX[k].m}` })) }); if (!n) return; S.week.days[U.selDay].ex.push({ name: n, sets: 3, reps: 10, kg: S.progress[n] ?? 0 }); save(); render(); },
@@ -724,6 +754,7 @@ const A = {
   // 饮食
   camera: () => { U.camera = { label: mealLabelByTime(), busy: false, photo: null, from: U.screen, hint: '', error: '' }; go('camera'); setTimeout(() => { const f = document.getElementById('camfile'); if (f) f.click(); }, 60); },
   closeCamera: () => { KD_AI.abort(); const f = U.camera?.from; U.camera = null; go(f && f !== 'camera' ? f : 'home'); },
+  useHint: d => { if (!U.camera) return; U.camera.hint = U.camera.hint === d.h ? '' : d.h; const el = document.getElementById('hint'); if (el) el.value = U.camera.hint; render(); },
   cycleLabel: () => { const L = ['早餐', '午餐', '加餐', '晚餐']; U.camera.label = L[(L.indexOf(U.camera.label) + 1) % 4]; render(); },
   cycleResultLabel: () => { const L = ['早餐', '午餐', '加餐', '晚餐']; U.result.label = L[(L.indexOf(U.result.label) + 1) % 4]; render(); },
   closeResult: () => { const f = U.result.from; U.result = null; go(f || 'home'); },
@@ -756,10 +787,10 @@ const A = {
   logPicked: () => { const s = U.search; addMeal(s.label, s.picked.map(f => ({ n: f.n, u: f.u, k: f.k, p: f.p, c: f.c, f: f.f }))); const n = s.picked.length, k = sum(s.picked, 'k'); stopScan(); U.search = null; go('food'); toast(`已记入${s.label} · ${n} 项 · ${k} kcal`); },
   extraBurn: async () => { const d = today(); const v = await ask({ title: '手表 / 手环消耗', note: '填手表显示的今日运动消耗，不含本 App 记录的训练。', fields: [{ key: 'v', label: '消耗', unit: 'kcal', type: 'number', value: S.burn[d] || 0, min: 0, max: 5000 }], okLabel: '保存' }); if (!v) return; S.burn[d] = Math.max(0, +v.v || 0); save(); render(); },
   // 体重
-  weigh: () => { const last = S.weights[S.weights.length - 1]; open_('weigh', null); U.weigh = { kg: last ? last.kg : S.profile.weight, bf: last ? last.bf || 0 : 0 }; render(); },
+  weigh: () => { const last = S.weights[S.weights.length - 1], lw = [...S.weights].reverse().find(w => w.waist); open_('weigh', null); U.weigh = { kg: last ? last.kg : S.profile.weight, bf: last ? last.bf || 0 : 0, waist: lw ? lw.waist : 0 }; render(); },
   closeWeigh: () => { U.weigh = null; render(); },
-  wKg: d => { U.weigh.kg = +(U.weigh.kg + (+d.d)).toFixed(1); render(); }, wBf: d => { U.weigh.bf = +Math.max(0, U.weigh.bf + (+d.d)).toFixed(1); render(); },
-  saveWeigh: () => { const t = today(), i = S.weights.findIndex(w => w.date === t), rec = { date: t, kg: U.weigh.kg, bf: U.weigh.bf }; if (i >= 0) S.weights[i] = rec; else S.weights.push(rec); S.weights.sort((a, b) => a.date < b.date ? -1 : 1); U.weigh = null; save(); render(); toast('已记录今日体重'); },
+  wKg: d => { U.weigh.kg = +(U.weigh.kg + (+d.d)).toFixed(1); render(); }, wBf: d => { U.weigh.bf = +Math.max(0, U.weigh.bf + (+d.d)).toFixed(1); render(); }, wWaist: d => { U.weigh.waist = +Math.max(0, U.weigh.waist + (+d.d)).toFixed(1); render(); },
+  saveWeigh: () => { const t = today(), i = S.weights.findIndex(w => w.date === t), rec = { date: t, kg: U.weigh.kg, bf: U.weigh.bf, waist: U.weigh.waist || 0 }; if (i >= 0) S.weights[i] = rec; else S.weights.push(rec); S.weights.sort((a, b) => a.date < b.date ? -1 : 1); U.weigh = null; save(); render(); toast('已记录今日体重'); },
   // 周报
   openWeekly: () => { const st = weekStats(); open_('weekly', null); U.weekly = { stats: st, review: ruleReview(st), ai: false }; render(); },
   closeWeekly: () => { U.weekly = null; render(); },
@@ -800,7 +831,8 @@ const A = {
   apiKey: async d => { const k = d.k || 'apiKey'; const v = await ask({ title: k === 'geminiKey' ? 'Gemini API key' : 'Anthropic API key', note: '只存在这台手机的浏览器里。', fields: [{ key: 'v', label: 'Key', type: 'password', value: S.prefs[k], placeholder: k === 'geminiKey' ? 'AIza…' : 'sk-ant-…' }], okLabel: '保存' }); if (!v) return; S.prefs[k] = (v.v || '').trim(); save(); render(); },
   provider: d => { S.prefs.provider = d.v; save(); render(); },
   pingAI: async () => { U.busy = '正在连接…'; render(); try { const r = await KD_AI.ping(S.prefs); U.busy = ''; render(); toast(`连接正常 · ${r.ms} ms`, 3000); } catch (e) { U.busy = ''; render(); toast('失败：' + e.message, 5000); } },
-  exportData: () => { const blob = new Blob([JSON.stringify(S, null, 1)], { type: 'application/json' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `kedu-${today()}.json`; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000); },
+  exportData: () => backup(true),
+  exportFile: () => backup(false),
   importData: () => { const f = document.createElement('input'); f.type = 'file'; f.accept = 'application/json,.json'; f.onchange = () => { const r = new FileReader(); r.onload = () => { try { const j = JSON.parse(r.result); if (j.v !== 1 || !j.profile) throw new Error('不是刻度的数据文件'); S = j; save(); ensureWeek(); go('home'); toast('已导入'); } catch (e) { toast('导入失败：' + e.message); } }; r.readAsText(f.files[0]); }; f.click(); },
   reloadApp: async () => { try { const r = await navigator.serviceWorker?.getRegistration(); if (r) await r.update(); } catch (_) {} location.reload(); },
   wipe: async () => { if (!await confirmAsk('清空全部数据？', '不可恢复，建议先导出。', '清空', true)) return; localStorage.removeItem(KEY); location.reload(); },
@@ -832,11 +864,24 @@ setInterval(() => {
   }
 }, 1000);
 
+// ─── 数据安全：持久化存储 + 分享备份
+if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
+async function backup(share) {
+  const json = JSON.stringify(S, null, 1), name = `kedu-${today()}.json`;
+  if (share && navigator.share) {
+    try { const file = new File([json], name, { type: 'application/json' }); if (!navigator.canShare || navigator.canShare({ files: [file] })) { await navigator.share({ files: [file], title: '刻度备份' }); S.lastBackup = today(); save(); render(); return; } } catch (e) { if (e.name === 'AbortError') return; }
+  }
+  const blob = new Blob([json], { type: 'application/json' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  S.lastBackup = today(); save(); render();
+}
+const backupDue = () => { const days = Object.keys(S.logs).length + Object.keys(S.meals).length; return days >= 3 && (!S.lastBackup || S.lastBackup < addDays(today(), -7)); };
+
 // ─── 启动
 if (S.onboarded) ensureWeek();
 if (S.active && S.week && S.week.days[S.active.dayIdx] && S.week.days[S.active.dayIdx].date === S.active.date) U.screen = 'workout'; else S.active = null;
 U.selDay = Math.max(0, S.week ? S.week.days.findIndex(d => d.date === today()) : 0);
 render();
+{ const goTo = new URLSearchParams(location.search).get('go'); if (goTo && S.onboarded) { history.replaceState(null, '', location.pathname); if (goTo === 'camera') A.camera(); else if (goTo === 'workout' && !S.active) { const ti = todayIdx(); if (ti >= 0 && S.week.days[ti].ex.length) startWorkout(ti); else go('plan'); } } }
 if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('./sw.js').catch(() => {});
-window.KD = { S, U, render, save };
+window.KD = { S, U, render, save, recognize, stalled };
 })();

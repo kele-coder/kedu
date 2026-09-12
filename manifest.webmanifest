@@ -9,6 +9,10 @@
   "background_color": "#f3f2f2",
   "theme_color": "#f3f2f2",
   "lang": "zh-CN",
+  "shortcuts": [
+    { "name": "拍照记录", "short_name": "拍照", "url": "./index.html?go=camera", "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }] },
+    { "name": "开始训练", "short_name": "训练", "url": "./index.html?go=workout", "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }] }
+  ],
   "icons": [
     { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
     { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },

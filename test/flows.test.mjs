@@ -83,10 +83,24 @@ act('itemG', e => e.dataset.d === '10'); ok(KD.U.result.items[0].grams === 110, 
 act('altItem'); ok(KD.U.result.items[0].n === '糙米饭' && KD.U.result.items[0].per100.kcal === 111, '换成备选并按营养表取密度');
 act('logResult'); const lastMeal = Object.values(KD.S.meals)[0].slice(-1)[0]; ok(lastMeal.kcal === Math.round(110 * 111 / 100) + 225 && KD.S.foodMemory['糙米饭'].grams === 110, '记入并写入常吃记忆');
 
+// 4c. 识别后追问（mock 接口，不走网络）
+window.eval(`KD_AI.recognizeFood = async () => ({ items: [{ name: '炸酱面', grams: 250, per100: { kcal: 190, protein: 7, carbs: 28, fat: 6 }, confidence: 'low', reason: '酱料看不清', bbox: { x: 0, y: 0, w: 50, h: 50 }, alternatives: [{ name: '花生酱拌面', per100kcal: 215 }, { name: '拌面', per100kcal: 160 }] }] });`);
+act('go', e => e.dataset.to === 'food'); act('camera');
+window.eval(`KD.U.camera.hint = '沙县';`);
+window.eval(`document.getElementById('app').dispatchEvent(new Event('noop'))`);
+await (async () => { const p = window.eval(`(async () => { const f = document.createElement('input'); f.type = 'file'; f.id = 'galfile'; return 1; })()`); })();
+// 直接调用内部 recognize：通过 retryRecog 路径（需要 camera.photo）
+window.eval(`KD.recognize('data:image/jpeg;base64,AAAA', '沙县')`); await tick(); await tick(); await tick();
+ok(!!KD.U.sheet && KD.U.sheet.title === '这一份是？' && KD.U.sheet.options.some(o => o.label === '花生酱拌面'), '低置信度 → 追问一句');
+act('sheetPick', e => e.textContent.startsWith('花生酱拌面')); await tick(); await tick(); await tick();
+ok(KD.U.screen === 'result' && KD.U.result.items[0].n === '花生酱拌面' && KD.U.result.items[0].per100.kcal === 215 && KD.U.result.items[0].src === '营养表', '选了备选 → 名称与营养表密度更新');
+ok(KD.S.hints[0] === '沙县', '说明词存为常用 chips');
+act('closeResult');
+
 // 5. 体重 & 进度 & 周报
 act('go', e => e.dataset.to === 'home'); act('go', e => e.dataset.to === 'progress'); ok(KD.U.screen === 'progress', '首页消耗格 → 进度页'); act('weigh'); ok(!!KD.U.weigh, '体重弹层');
-act('wKg', e => e.dataset.d === '-0.1'); act('wBf', e => e.dataset.d === '0.1'); act('saveWeigh');
-ok(KD.S.weights.length === 1 && KD.S.weights[0].kg === 72.3, '同日覆盖体重 72.3');
+act('wKg', e => e.dataset.d === '-0.1'); act('wBf', e => e.dataset.d === '0.1'); act('wWaist', e => e.dataset.d === '0.5'); act('saveWeigh');
+ok(KD.S.weights.length === 1 && KD.S.weights[0].kg === 72.3 && KD.S.weights[0].waist === 0.5, '同日覆盖体重 72.3 · 腰围已存');
 act('openWeekly'); ok(!!KD.U.weekly && text().includes('建议 · 下周'), '周报覆盖层');
 act('genNext'); await new Promise(r => setTimeout(r, 50));
 ok(KD.S.nextWeek && KD.S.nextWeek.days.length === 7, '模板生成下周');
@@ -108,6 +122,15 @@ act('go', e => e.dataset.to === 'profile'); act('calib'); ok(!!KD.U.sheet && KD.
 window.eval(`(() => { const t = new Date(); for (let i = 27; i >= 0; i--) { const d = new Date(t); d.setDate(t.getDate() - i); const k = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); KD.S.meals[k] = [{ time: '08:00', label: '早餐', desc: 'x', kcal: 900, p: 40, c: 100, f: 30 }, { time: '18:00', label: '晚餐', desc: 'y', kcal: 900, p: 40, c: 100, f: 30 }]; if (i % 2 === 0) KD.S.weights.push({ date: k, kg: 75 - (27 - i) * 0.1, bf: 0 }); } KD.S.weights.sort((a, b) => a.date < b.date ? -1 : 1); KD.save(); })()`);
 act('calib'); ok(!!KD.U.sheet && KD.U.sheet.options.some(o => o.value === 'apply'), '校准：数据够了给出采用选项 · ' + KD.U.sheet.note.slice(0, 60)); act('sheetPick', e => e.textContent.includes('采用')); await tick(); await tick();
 ok(KD.S.calib && KD.S.calib.daily > 0, '已采用实测消耗 ' + (KD.S.calib && KD.S.calib.daily)); window.eval('KD.S.calib = null; KD.save();');
+
+// 5d. 停滞检测：伪造同一动作 3 次无进步记录
+window.eval(`(() => { const t = new Date(); for (let i = 3; i >= 1; i--) { const d = new Date(t); d.setDate(t.getDate() - i * 3); const k = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); KD.S.logs[k] = { name: 'x', date: k, sec: 1000, sets: [{ ex: '卧推', set: 0, kg: 50, reps: 8, unit: '', t: 0 }], burn: 100, done: true, planned: 1 }; } KD.save(); })()`);
+act('go', e => e.dataset.to === 'plan');
+{ const j = KD.S.week.days.findIndex(d => d.ex.some(e => e.name === '卧推') && d.date > new Date().toISOString().slice(0, 10)); if (j >= 0) { act('selDay', e => +e.dataset.i === j); ok($$('[data-act="unstall"]').length === 1, '卧推标「停滞」'); act('unstall'); act('sheetPick', e => e.textContent.startsWith('减 10%')); await tick(); await tick(); ok(KD.S.week.days[j].ex.find(e => e.name === '卧推').kg === 45, '减 10% → 45kg'); } else ok(true, '（本周无未来卧推日，跳过停滞 UI 检查）'); }
+ok(window.eval("KD.stalled('卧推')") === true && window.eval("KD.stalled('杠铃深蹲')") === false, 'stalled(): 卧推 3 次无进步 = true，深蹲 = false');
+// 直接走 unstall 动作（把今天的课换成含卧推的）
+window.eval(`const ti = KD.S.week.days.findIndex(d => d.date === (() => { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); })()); delete KD.S.logs[KD.S.week.days[ti].date]; KD.S.week.days[ti].ex = [{ name: '卧推', sets: 3, reps: 8, kg: 50 }]; KD.U.selDay = ti; KD.render();`);
+ok($$('[data-act="unstall"]').length === 1, '卧推标「停滞」'); act('unstall'); act('sheetPick', e => e.textContent.startsWith('减 10%')); await tick(); await tick(); ok(KD.S.week.days[KD.U.selDay].ex[0].kg === 45, '减 10% → 45kg');
 
 // 6. 我 · 设置
 act('go', e => e.dataset.to === 'profile'); ok(text().includes('Mifflin') || text().includes('日常消耗'), '个人页');
