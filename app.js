@@ -42,11 +42,12 @@ const KEY = 'kedu.v1';
 const fresh = () => ({
   v: 1, onboarded: false, ob: { step: 0, answers: {} },
   profile: { goal: '减脂', sex: '男', age: 30, height: 175, weight: 72, target: 68, activity: '轻度活动', place: '健身房', days: 5, kcalOverride: 0 },
-  prefs: { theme: 'auto', restMode: 'auto', restSec: 0, apiKey: '', extraBurn: 0, sound: true },
+  prefs: { theme: 'auto', restMode: 'auto', restSec: 0, provider: 'gemini', apiKey: '', geminiKey: '', extraBurn: 0, sound: true },
   week: null, nextWeek: null, history: [], logs: {}, meals: {}, weights: [], burn: {}, progress: {}, customFoods: [], recent: [], active: null,
 });
 let S; try { S = JSON.parse(localStorage.getItem(KEY)); } catch (_) { S = null; }
 if (!S || S.v !== 1) S = fresh();
+if (!S.prefs.provider) Object.assign(S.prefs, { provider: S.prefs.apiKey ? 'claude' : 'gemini', geminiKey: '' });
 const save = () => { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { toast('保存失败：' + e.message); } };
 
 // 界面临时状态（不持久化）
@@ -208,13 +209,13 @@ async function recognize(file) {
   render();
   try {
     const dataUrl = await resizeImage(file); U.camera.photo = dataUrl; render();
-    const r = await KD_AI.recognizeFood(S.prefs.apiKey, dataUrl.split(',')[1], 'image/jpeg');
+    const r = await KD_AI.recognizeFood(S.prefs, dataUrl.split(',')[1], 'image/jpeg');
     const items = (r.items || []).map(it => ({ n: it.name, u: it.portion, k: it.kcal, p: it.protein, c: it.carbs, f: it.fat, bbox: it.bbox, alts: it.alternatives || [] }));
     if (!items.length) { toast('没识别出食物，换个角度再拍或用搜索'); U.camera.busy = false; render(); return; }
     U.result = { photo: dataUrl, items, open: -1, label: U.camera.label, from: U.camera.from }; U.camera = null; U.screen = 'result'; render();
   } catch (e) {
     U.camera.busy = false; render();
-    toast(e.message === 'NO_KEY' ? '未设置 API key：去「我」里填写，或改用搜索' : '识别失败：' + e.message, 3200);
+    toast(e.message === 'NO_KEY' ? `未设置 ${S.prefs.provider === 'gemini' ? 'Gemini' : 'Claude'} API key：去「我」里填写，或改用搜索` : '识别失败：' + e.message, 3200);
   }
 }
 // 条码
@@ -271,11 +272,11 @@ async function generateNext() {
   const start = addDays(S.week.start, 7);
   U.busy = '正在生成下周计划…'; render();
   let wk = buildWeek(start);
-  if (S.prefs.apiKey) {
+  if (KD_AI.hasKey(S.prefs)) {
     try {
       const st = weekStats();
       const ctx = { profile: { ...S.profile, weight: latestWeight() }, targets: targets(), thisWeek: S.week.days.map(d => ({ dow: dow(d.date), name: d.name, place: d.place, ex: d.ex, status: dayStatus(d), log: S.logs[d.date] ? S.logs[d.date].sets : [] })), stats: st, progress: S.progress, restrictions: `每周训练 ${S.profile.days} 天；场地 ${S.profile.place}` };
-      const r = await KD_AI.generatePlan(S.prefs.apiKey, ctx);
+      const r = await KD_AI.generatePlan(S.prefs, ctx);
       if (r.days && r.days.length) {
         wk.days = wk.days.map((d, i) => { const g = r.days.find(x => x.dow === i + 1); return g && g.ex.length ? { date: d.date, name: g.name, place: g.place, mins: g.mins, ex: g.ex.map(e => ({ name: e.name, sets: e.sets, reps: e.reps, kg: e.kg, ...(e.unit ? { unit: e.unit } : {}) })) } : { date: d.date, name: '休息', place: '', mins: 0, ex: [] }; });
         wk.note = r.note || '';
@@ -442,7 +443,8 @@ function rProfile() {
     ${row('休息结束提示音', S.prefs.sound ? '开' : '关（仅震动）', 'toggleSound')}
     <div class="kicker" style="margin:14px 0 2px">数据与外观</div>
     <div class="list-row"><span style="font-size:14px">外观</span><div class="seg" style="width:200px">${seg}</div></div>
-    ${row('Claude API key', S.prefs.apiKey ? '已设置 ' + S.prefs.apiKey.slice(0, 10) + '…' : '未设置（拍照识别 / AI 计划需要）', 'apiKey')}
+    <div class="list-row"><span style="font-size:14px">AI 服务商</span><div class="seg" style="width:180px">${[['gemini', 'Gemini · 免费'], ['claude', 'Claude']].map(([v, l]) => `<div class="${S.prefs.provider === v ? 'on' : ''}" data-act="provider" data-v="${v}">${l}</div>`).join('')}</div></div>
+    ${S.prefs.provider === 'gemini' ? row('Gemini API key', S.prefs.geminiKey ? '已设置 ' + S.prefs.geminiKey.slice(0, 8) + '…' : '未设置 · aistudio.google.com 免费申请', 'apiKey', 'data-k="geminiKey"') : row('Claude API key', S.prefs.apiKey ? '已设置 ' + S.prefs.apiKey.slice(0, 10) + '…' : '未设置 · console.anthropic.com（需充值）', 'apiKey', 'data-k="apiKey"')}
     ${row('手表 / 运动手环', '不支持自动同步 · 在饮食页手动录消耗', '')}
     ${row('导出数据', 'JSON ›', 'exportData')}
     ${row('导入数据', '选择文件 ›', 'importData')}
@@ -556,7 +558,7 @@ function rWeekly() {
       <div class="kicker acc">本周总结${w.ai ? ' · AI' : ''}</div><div class="h" style="font-size:30px;line-height:1.15;margin:6px 0 14px">${esc(rv.headline)}</div>
       <div class="grid2" style="border-top:2px solid var(--line);border-bottom:2px solid var(--line)">${[['训练完成', `${st.done} / ${st.planned}`, ''], ['训练消耗', fmt(st.burn) + ' kcal', ''], ['日均热量差', st.loggedDays ? (st.avgDef > 0 ? '+' : '') + fmt(st.avgDef) : '—', ''], ['体重变化', st.wDelta != null ? sign(st.wDelta) + ' kg' : '—', 'acc']].map(([k, v, c], i) => `<div style="padding:12px ${i % 2 ? '0 12px 12px' : '12px 12px 0'};${i % 2 === 0 ? 'border-right:2px solid var(--line);' : ''}${i < 2 ? 'border-bottom:2px solid var(--line)' : ''}"><div class="kicker">${k}</div><div class="big ${c}" style="font-size:22px;margin-top:6px">${v}</div></div>`).join('')}</div>
       <div class="kicker" style="margin:16px 0 4px">建议 · 下周</div>${rv.tips.map(t => `<div style="display:flex;gap:10px;align-items:flex-start;padding:8px 0"><span style="width:10px;height:10px;background:var(--acc);flex:none;margin-top:5px"></span><span style="font-size:13px;line-height:1.5">${esc(t)}</span></div>`).join('')}
-      ${!w.ai && S.prefs.apiKey ? `<div style="padding:8px 0"><span class="link" data-act="aiReview">用 AI 重写周报 ›</span></div>` : ''}<div style="height:16px"></div></div>
+      ${!w.ai && KD_AI.hasKey(S.prefs) ? `<div style="padding:8px 0"><span class="link" data-act="aiReview">用 AI 重写周报 ›</span></div>` : ''}<div style="height:16px"></div></div>
     <div class="footer" style="display:flex;gap:8px"><button class="btn ghost" data-act="closeWeekly" style="flex:1"><span>稍后</span></button><div style="flex:2">${btn(S.nextWeek ? '重新生成下周' : '按建议生成下周', 'genNext')}</div></div></div>`;
 }
 
@@ -642,7 +644,7 @@ const A = {
   // 周报
   openWeekly: () => { const st = weekStats(); U.weekly = { stats: st, review: ruleReview(st), ai: false }; render(); },
   closeWeekly: () => { U.weekly = null; render(); },
-  aiReview: async () => { const w = U.weekly; U.busy = 'AI 正在写周报…'; render(); try { const st = w.stats, ctx = { profile: { ...S.profile, weight: latestWeight() }, targets: targets(), stats: st, days: S.week.days.map(d => ({ date: d.date, plan: d.name, status: dayStatus(d), meals: mealsOf(d.date).map(m => ({ label: m.label, desc: m.desc, kcal: m.kcal, p: m.p })), deficit: mealsOf(d.date).length ? deficitOf(d.date) : null })), weights: S.weights.slice(-14) }; const r = await KD_AI.weeklyReview(S.prefs.apiKey, ctx); w.review = r; w.ai = true; } catch (e) { toast('失败：' + e.message); } U.busy = ''; render(); },
+  aiReview: async () => { const w = U.weekly; U.busy = 'AI 正在写周报…'; render(); try { const st = w.stats, ctx = { profile: { ...S.profile, weight: latestWeight() }, targets: targets(), stats: st, days: S.week.days.map(d => ({ date: d.date, plan: d.name, status: dayStatus(d), meals: mealsOf(d.date).map(m => ({ label: m.label, desc: m.desc, kcal: m.kcal, p: m.p })), deficit: mealsOf(d.date).length ? deficitOf(d.date) : null })), weights: S.weights.slice(-14) }; const r = await KD_AI.weeklyReview(S.prefs, ctx); w.review = r; w.ai = true; } catch (e) { toast('失败：' + e.message); } U.busy = ''; render(); },
   genNext: generateNext,
   // 我
   theme: d => { S.prefs.theme = d.v; save(); render(); },
@@ -651,7 +653,8 @@ const A = {
   cycle: d => { const c = cycles[d.k]; S.profile[d.k] = c[(c.indexOf(S.profile[d.k]) + 1) % c.length]; save(); render(); if (d.k === 'days' || d.k === 'place') toast('下周生效；要立即生效点「重新生成本周计划」', 2600); },
   editNum: d => { const [label, min, max] = numFields[d.k]; const cur = d.k === 'restSec' ? S.prefs.restSec : S.profile[d.k]; const v = prompt(label, cur); if (v == null) return; const n = +v; if (!(n >= min && n <= max)) { toast(`范围 ${min}–${max}`); return; } if (d.k === 'restSec') S.prefs.restSec = n; else S.profile[d.k] = n; save(); render(); },
   regen: () => { if (!confirm('把本周未完成的天按当前设置重排？已完成的记录不变。')) return; const t = today(), fresh_ = buildWeek(S.week.start); S.week.days = S.week.days.map((d, i) => d.date < t || (S.logs[d.date] && S.logs[d.date].sets.length) ? d : fresh_.days[i]); S.week.note = ''; save(); render(); toast('本周剩余训练已重排'); },
-  apiKey: () => { const v = prompt('Anthropic API key（只存本机）', S.prefs.apiKey); if (v == null) return; S.prefs.apiKey = v.trim(); save(); render(); },
+  apiKey: d => { const k = d.k || 'apiKey'; const v = prompt(k === 'geminiKey' ? 'Gemini API key（只存本机）' : 'Anthropic API key（只存本机）', S.prefs[k]); if (v == null) return; S.prefs[k] = v.trim(); save(); render(); },
+  provider: d => { S.prefs.provider = d.v; save(); render(); },
   exportData: () => { const blob = new Blob([JSON.stringify(S, null, 1)], { type: 'application/json' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `kedu-${today()}.json`; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000); },
   importData: () => { const f = document.createElement('input'); f.type = 'file'; f.accept = 'application/json,.json'; f.onchange = () => { const r = new FileReader(); r.onload = () => { try { const j = JSON.parse(r.result); if (j.v !== 1 || !j.profile) throw new Error('不是刻度的数据文件'); S = j; save(); ensureWeek(); go('home'); toast('已导入'); } catch (e) { toast('导入失败：' + e.message); } }; r.readAsText(f.files[0]); }; f.click(); },
   wipe: () => { if (!confirm('清空全部数据？不可恢复。建议先导出。')) return; localStorage.removeItem(KEY); location.reload(); },

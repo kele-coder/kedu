@@ -21,7 +21,10 @@ cd kedu-app && node serve.mjs 4173
 Vercel / Netlify / Cloudflare Pages 拖文件夹上传也一样能用。
 
 ## 需要你自己配的东西
-- **Claude API key**（「我」→ Claude API key）：拍照识别食物、AI 生成下周计划、AI 周报要用。不填也能用：搜索/扫码/自定义食物记录饮食，计划按模板 + 渐进超负荷生成，周报走规则。费用：一张照片识别约 ¥0.1–0.3。key 只存在手机本地，直接请求 Anthropic，不经过任何第三方。
+- **AI key**（「我」→ AI 服务商）：拍照识别食物、AI 生成下周计划、AI 周报要用。两个可选：
+  - **Gemini（默认，免费）**：https://aistudio.google.com → Get API key，不需要绑卡；免费档每天上千次够用。注意 Google 声明免费档内容可能用于训练。
+  - **Claude**：https://console.anthropic.com，需预充值，一张照片约 $0.02–0.05。
+  不填也能用：搜索/扫码/自定义食物记录饮食，计划按模板 + 渐进超负荷生成，周报走规则。key 只存在手机本地，浏览器直连服务商，不经过任何第三方。
 - **条码**：走 Open Food Facts 公共库，免费、无需 key，国内商品收录不全；查不到时可手动录热量存为自定义食物。
 - **手表消耗**：Web 拿不到 Health Connect / HealthKit，在「饮食」页 ⌚ 手动填当天运动消耗。
 
@@ -43,7 +46,7 @@ Vercel / Netlify / Cloudflare Pages 拖文件夹上传也一样能用。
 未做：Health Connect / HealthKit 自动同步（需原生壳）；示范视频仍是 YouTube 嵌入（26 个 ID 已验证有效，国内网络需代理）。
 
 ## 文件
-- `index.html` `app.css` `app.js` — 应用本体；`data.js` — 动作库（35 个动作，含解析/要点/备选/在家版/视频）、计划模板（3–6 天）、食物库（60+ 中餐常见）；`ai.js` — Claude 与 Open Food Facts 接口。
+- `index.html` `app.css` `app.js` — 应用本体；`data.js` — 动作库（35 个动作，含解析/要点/备选/在家版/视频）、计划模板（3–6 天）、食物库（60+ 中餐常见）；`ai.js` — Claude / Gemini 与 Open Food Facts 接口（`GEMINI_MODEL` / `CLAUDE_MODEL` 在文件顶部改）。
 - `sw.js` `manifest.webmanifest` `icons/` — PWA。
 - `serve.mjs` — 本地预览；`test/` — jsdom 流程测试（`npm i jsdom` 后 `node test/flows.test.mjs`）。
 
