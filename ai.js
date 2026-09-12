@@ -35,7 +35,7 @@ async function callGemini(apiKey, { system, content, schema: sc, signal }) {
   return parseJSON((c.content.parts || []).map(p => p.text || '').join(''));
 }
 let lastError = '';
-async function call(prefs, req, timeoutMs = 45000) {
+async function call(prefs, req, timeoutMs = 90000) {
   const key = (keyOf(prefs) || '').trim();
   if (!key) throw new Error('NO_KEY');
   const ac = new AbortController(); const t = setTimeout(() => ac.abort(), timeoutMs); req.signal = ac.signal; call.abort = () => ac.abort();
