@@ -450,7 +450,7 @@ function rProfile() {
     ${row('导入数据', '选择文件 ›', 'importData')}
     ${row('重新走一遍引导', '›', 'restart')}
     ${row('清空全部数据', '›', 'wipe')}
-    <div class="muted" style="font-size:11px;padding:16px 0 24px">刻度 · 数据只存在这台手机的浏览器里。</div>
+    <div class="muted" style="font-size:11px;padding:16px 0 24px" data-act="reloadApp">刻度 v4 · 数据只存在这台手机的浏览器里 · 点此检查更新</div>
   </div>${nav()}</div>`;
 }
 
@@ -657,6 +657,7 @@ const A = {
   provider: d => { S.prefs.provider = d.v; save(); render(); },
   exportData: () => { const blob = new Blob([JSON.stringify(S, null, 1)], { type: 'application/json' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `kedu-${today()}.json`; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000); },
   importData: () => { const f = document.createElement('input'); f.type = 'file'; f.accept = 'application/json,.json'; f.onchange = () => { const r = new FileReader(); r.onload = () => { try { const j = JSON.parse(r.result); if (j.v !== 1 || !j.profile) throw new Error('不是刻度的数据文件'); S = j; save(); ensureWeek(); go('home'); toast('已导入'); } catch (e) { toast('导入失败：' + e.message); } }; r.readAsText(f.files[0]); }; f.click(); },
+  reloadApp: async () => { try { const r = await navigator.serviceWorker?.getRegistration(); if (r) await r.update(); } catch (_) {} location.reload(); },
   wipe: () => { if (!confirm('清空全部数据？不可恢复。建议先导出。')) return; localStorage.removeItem(KEY); location.reload(); },
 };
 root.addEventListener('click', ev => {
