@@ -100,3 +100,17 @@ video{object-fit:cover;width:100%;height:100%;filter:grayscale(1) contrast(1.08)
 .plan-ex .nm{display:flex;align-items:center;gap:6px;font-size:14px;font-weight:600;flex:1;min-width:0}
 .plan-ex .nm svg{width:12px;height:12px;flex:none}
 .plan-ex .spec{font-size:12px;color:var(--muted);white-space:nowrap}
+
+/* 动效：只在页面切换 / 覆盖层打开时播放一次 */
+.screen.enter{animation:fade .18s ease-out}
+.overlay.enter{animation:up .22s cubic-bezier(.2,.8,.2,1)}
+.sheet.enter{animation:up .22s cubic-bezier(.2,.8,.2,1)}
+.row-in{animation:rowin .28s ease-out both}
+@keyframes fade{from{opacity:0}}
+@keyframes up{from{transform:translateY(28px);opacity:0}}
+@keyframes rowin{from{transform:translateY(8px);opacity:0}}
+.btn:active{transform:scale(.985)}
+.step:active,.opt:active,.chip:active{background:var(--surface)}
+.chip.on{background:var(--acc);color:#fff}
+.sheet .scroll{max-height:60vh}
+@media (prefers-reduced-motion:reduce){.screen.enter,.overlay.enter,.sheet.enter,.row-in{animation:none}}

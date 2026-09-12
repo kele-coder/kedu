@@ -53,24 +53,34 @@ async function ping(prefs) {
 
 const schema = (properties, required) => ({ type: 'json_schema', schema: { type: 'object', properties, required, additionalProperties: false } });
 
-// 图片 → 食物列表。bbox 为百分比（0–100），用于在照片上画框。
-async function recognizeFood(prefs, base64, mediaType) {
+// 图片 → 食物列表 v2：模型只负责认菜、估克数、给每 100g 密度与置信度；热量由 app 按本地营养表/密度计算。
+async function recognizeFood(prefs, base64, mediaType, { hint = '', known = [] } = {}) {
+  const per100 = { type: 'object', additionalProperties: false, required: ['kcal', 'protein', 'carbs', 'fat'], properties: { kcal: { type: 'number' }, protein: { type: 'number' }, carbs: { type: 'number' }, fat: { type: 'number' } } };
   const items = {
     type: 'array', items: { type: 'object', additionalProperties: false,
-      required: ['name', 'portion', 'kcal', 'protein', 'carbs', 'fat', 'bbox', 'alternatives'],
+      required: ['name', 'grams', 'per100', 'confidence', 'reason', 'bbox', 'alternatives'],
       properties: {
-        name: { type: 'string', description: '中文菜名/食物名，简短' },
-        portion: { type: 'string', description: '估计份量，如 "约 180g" / "1 碗 150g"' },
-        kcal: { type: 'integer' }, protein: { type: 'integer' }, carbs: { type: 'integer' }, fat: { type: 'integer' },
-        bbox: { type: 'object', additionalProperties: false, required: ['x', 'y', 'w', 'h'], properties: { x: { type: 'number' }, y: { type: 'number' }, w: { type: 'number' }, h: { type: 'number' } }, description: '该食物在图中的大致位置，百分比 0-100' },
-        alternatives: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['name', 'kcal'], properties: { name: { type: 'string' }, kcal: { type: 'integer' } } }, description: '2-3 个可能混淆的相似菜品及其热量' },
+        name: { type: 'string', description: '中文菜名/食物名，简短通用（如 "白米饭" "宫保鸡丁"），不要带形容词' },
+        grams: { type: 'integer', description: '这一份的估计重量（克，熟重）' },
+        per100: { ...per100, description: '每 100g 的热量 kcal 与蛋白/碳水/脂肪克数' },
+        confidence: { type: 'string', enum: ['high', 'medium', 'low'], description: '对菜名与份量的整体把握' },
+        reason: { type: 'string', description: '一句话：用什么参照物/依据估的份量（≤20 字）' },
+        bbox: { type: 'object', additionalProperties: false, required: ['x', 'y', 'w', 'h'], properties: { x: { type: 'number' }, y: { type: 'number' }, w: { type: 'number' }, h: { type: 'number' } }, description: '在图中的位置，百分比 0-100' },
+        alternatives: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['name', 'per100kcal'], properties: { name: { type: 'string' }, per100kcal: { type: 'number' } } }, description: '2-3 个可能混淆的相近菜品及其每 100g 热量' },
       } },
   };
+  const sys = `你是经验丰富的中餐营养师。任务：识别照片中每一种食物，估计份量。
+步骤：1) 先找参照物判断尺度：普通饭碗口径约 11–12cm、盛满米饭约 150–200g；外卖餐盒一格米饭约 200–250g；筷子长约 24cm；餐盘直径约 20–26cm；易拉罐 330ml。2) 逐个食物判断名称（用最常见的通用菜名）、可见部分被遮挡的比例、堆叠高度，估算克数。3) 给出每 100g 的营养密度（按常见做法含油量）。4) 混合菜（盖浇饭、便当、炒饭）拆成主食 + 菜分别列出。5) 汤只算汤本身，饮料按体积估克数。
+把握不大的项 confidence 标 low，并在 alternatives 给出相近选项。只输出 JSON。`;
+  const parts = [];
+  if (hint) parts.push(`用户补充说明（优先采信）：${hint}`);
+  if (known.length) parts.push(`用户常吃的食物名（若匹配请沿用同样的名字）：${known.join('、')}`);
+  parts.push('识别这张照片里的食物。');
   return call(prefs, {
-    system: '你是营养师。识别照片中的每一种食物/菜品，用中文命名，估计份量与每份热量和三大营养素（克，整数）。中式菜按常见做法估算油量。无法确定时给出最可能的判断，并在 alternatives 里给 2-3 个相近选项。bbox 为该食物在图中的位置，百分比 0-100。只输出 JSON。',
+    system: sys,
     content: [
       { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } },
-      { type: 'text', text: '识别这张照片里的食物。' },
+      { type: 'text', text: parts.join('\n') },
     ],
     effort: 'medium', schema: schema({ items }, ['items']),
   });
@@ -84,7 +94,7 @@ async function generatePlan(prefs, ctx) {
   const day = { type: 'object', additionalProperties: false, required: ['dow', 'name', 'place', 'mins', 'ex'],
     properties: { dow: { type: 'integer', description: '1=周一 … 7=周日' }, name: { type: 'string', description: '课程名，如 "下肢 + 核心"' }, place: { type: 'string', enum: ['健身房', '在家'] }, mins: { type: 'integer' }, ex: { type: 'array', items: ex } } };
   return call(prefs, {
-    system: `你是力量与减脂教练。根据用户资料和上周记录生成下一周的训练计划。规则：只使用给定动作名（enum）；每周训练天数与用户设定一致，其余为休息；重量以用户最近记录为基准，上周所有组都达标的动作按渐进超负荷加重（下肢 +5kg，上肢 +2.5kg，哑铃 +1~2kg），未完成的保持或减 5%；自重动作 kg=0；计时动作 unit 为 "s" 或 "min"，其余为 ""。减脂目标：每周 1 次有氧+核心；增肌目标：全部力量。只输出 JSON。`,
+    system: `你是力量与减脂教练。根据用户资料和上周记录生成下一周的训练计划。规则：只使用给定动作名（enum）；每周训练天数与用户设定一致，其余为休息；重量以用户最近记录为基准，上周所有组都达标的动作按渐进超负荷加重（下肢 +5kg，上肢 +2.5kg，哑铃 +1~2kg），未完成的保持或减 5%；自重动作 kg=0；计时动作 unit 为 "s" 或 "min"，其余为 ""。减脂目标默认每周 1 次有氧；增肌目标全部力量。ctx.rules 是硬性约束（天数、场地、是否安排核心、分化方式），ctx.userRequest 是用户本次的具体要求，两者必须严格遵守，优先级高于默认模板；ctx.scope 若存在则只改指定范围。note 用一句话说明这周的安排思路和对用户要求的处理。只输出 JSON。`,
     content: [{ type: 'text', text: JSON.stringify(ctx) }],
     effort: 'high', schema: schema({ days: { type: 'array', items: day }, note: { type: 'string', description: '一句话说明本周安排思路' } }, ['days', 'note']),
   });
