@@ -459,12 +459,12 @@ function rCamera() {
   return `<div class="screen" style="background:#201e1d;color:#f3f2f2">
   <div class="row" style="padding:10px 20px;border-bottom:2px solid rgba(243,242,242,.4)"><span data-act="closeCamera" style="width:24px;height:24px;display:flex">${I.x}</span><span class="kicker" style="color:#f3f2f2">${c.busy ? '识别中…' : '拍照识别'}</span><span style="width:24px"></span></div>
   <div style="flex:1;position:relative;margin:20px;overflow:hidden;display:flex;align-items:center;justify-content:center;background:#2d2b2b">
-    ${c.photo ? `<img src="${c.photo}" class="gray" style="width:100%;height:100%;object-fit:cover">` : `<div class="muted" style="font-size:13px;color:#bab6b6;text-align:center;padding:0 24px">点击下方快门打开相机，拍下这一餐。<br>一次拍全整桌菜也可以。</div>`}
+    ${c.photo ? `<img src="${c.photo}" class="gray" style="width:100%;height:100%;object-fit:cover">` : `<div class="muted" style="font-size:13px;color:#bab6b6;text-align:center;padding:0 24px">快门开相机拍这一餐，或左下「相册」选已有照片。<br>一次拍全整桌菜也可以。</div>`}
     <div class="corner tl"></div><div class="corner tr"></div><div class="corner bl"></div><div class="corner br"></div>
     ${c.busy && c.photo ? '<div class="scanline"></div>' : ''}
   </div>
   <div class="grid3" style="align-items:center;padding:8px 20px calc(24px + var(--sab))">
-    <span data-act="openSearch" style="font-size:13px;font-weight:600">搜索</span>
+    <div style="display:flex;flex-direction:column;gap:14px;font-size:13px;font-weight:600"><label>相册<input type="file" accept="image/*" id="galfile" class="hidden" ${c.busy ? 'disabled' : ''}></label><span data-act="openSearch">搜索</span></div>
     <div style="display:flex;justify-content:center"><label style="width:72px;height:72px;border:2px solid #fff;display:flex;align-items:center;justify-content:center;${c.busy ? 'opacity:.5' : ''}"><div style="width:56px;height:56px;background:${c.busy ? 'var(--acc)' : '#f3f2f2'}"></div><input type="file" accept="image/*" capture="environment" id="camfile" class="hidden" ${c.busy ? 'disabled' : ''}></label></div>
     <span data-act="cycleLabel" style="font-size:13px;font-weight:600;text-align:right">${c.label} ›</span>
   </div></div>`;
@@ -670,7 +670,7 @@ root.addEventListener('input', ev => {
   if (el.dataset.inp === 'query' && U.search) { U.search.query = el.value; const r = document.getElementById('results'); if (r) { const tmp = document.createElement('div'); tmp.innerHTML = rSearch(); r.innerHTML = tmp.querySelector('#results').innerHTML; } }
   if (el.dataset.inp === 'obnum') U.obDraft = null;
 });
-root.addEventListener('change', ev => { if (ev.target.id === 'camfile' && ev.target.files[0]) recognize(ev.target.files[0]); });
+root.addEventListener('change', ev => { if ((ev.target.id === 'camfile' || ev.target.id === 'galfile') && ev.target.files[0]) recognize(ev.target.files[0]); });
 document.addEventListener('visibilitychange', () => { if (!document.hidden) { ensureWeek(); if (U.screen === 'workout') lockScreen(true); render(); } });
 
 // 每秒：训练计时 / 休息倒计时（只改文字，不整页重绘）
