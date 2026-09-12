@@ -205,15 +205,17 @@ function resizeImage(file, max = 1280) {
   });
 }
 async function recognize(file) {
-  U.camera = { label: U.camera?.label || mealLabelByTime(), busy: true, photo: null, from: U.camera?.from || 'home' };
+  U.camera = { label: U.camera?.label || mealLabelByTime(), busy: true, photo: null, from: U.camera?.from || 'home', t0: Date.now() };
   render();
   try {
     const dataUrl = await resizeImage(file); U.camera.photo = dataUrl; render();
     const r = await KD_AI.recognizeFood(S.prefs, dataUrl.split(',')[1], 'image/jpeg');
     const items = (r.items || []).map(it => ({ n: it.name, u: it.portion, k: it.kcal, p: it.protein, c: it.carbs, f: it.fat, bbox: it.bbox, alts: it.alternatives || [] }));
+    if (!U.camera) return; // 用户已关闭
     if (!items.length) { toast('没识别出食物，换个角度再拍或用搜索'); U.camera.busy = false; render(); return; }
     U.result = { photo: dataUrl, items, open: -1, label: U.camera.label, from: U.camera.from }; U.camera = null; U.screen = 'result'; render();
   } catch (e) {
+    if (!U.camera) return;
     U.camera.busy = false; render();
     toast(e.message === 'NO_KEY' ? `未设置 ${S.prefs.provider === 'gemini' ? 'Gemini' : 'Claude'} API key：去「我」里填写，或改用搜索` : '识别失败：' + e.message, 3200);
   }
@@ -445,19 +447,21 @@ function rProfile() {
     <div class="list-row"><span style="font-size:14px">外观</span><div class="seg" style="width:200px">${seg}</div></div>
     <div class="list-row"><span style="font-size:14px">AI 服务商</span><div class="seg" style="width:180px">${[['gemini', 'Gemini · 免费'], ['claude', 'Claude']].map(([v, l]) => `<div class="${S.prefs.provider === v ? 'on' : ''}" data-act="provider" data-v="${v}">${l}</div>`).join('')}</div></div>
     ${S.prefs.provider === 'gemini' ? row('Gemini API key', S.prefs.geminiKey ? '已设置 ' + S.prefs.geminiKey.slice(0, 8) + '…' : '未设置 · aistudio.google.com 免费申请', 'apiKey', 'data-k="geminiKey"') : row('Claude API key', S.prefs.apiKey ? '已设置 ' + S.prefs.apiKey.slice(0, 10) + '…' : '未设置 · console.anthropic.com（需充值）', 'apiKey', 'data-k="apiKey"')}
+    ${row('测试 AI 连接', `${KD_AI.model(S.prefs)} ›`, 'pingAI')}
+    ${KD_AI.lastError() ? `<div class="muted" style="font-size:11px;padding:6px 0;word-break:break-all">最近错误：${esc(KD_AI.lastError())}</div>` : ''}
     ${row('手表 / 运动手环', '不支持自动同步 · 在饮食页手动录消耗', '')}
     ${row('导出数据', 'JSON ›', 'exportData')}
     ${row('导入数据', '选择文件 ›', 'importData')}
     ${row('重新走一遍引导', '›', 'restart')}
     ${row('清空全部数据', '›', 'wipe')}
-    <div class="muted" style="font-size:11px;padding:16px 0 24px" data-act="reloadApp">刻度 v4 · 数据只存在这台手机的浏览器里 · 点此检查更新</div>
+    <div class="muted" style="font-size:11px;padding:16px 0 24px" data-act="reloadApp">刻度 v5 · 数据只存在这台手机的浏览器里 · 点此检查更新</div>
   </div>${nav()}</div>`;
 }
 
 function rCamera() {
   const c = U.camera;
   return `<div class="screen" style="background:#201e1d;color:#f3f2f2">
-  <div class="row" style="padding:10px 20px;border-bottom:2px solid rgba(243,242,242,.4)"><span data-act="closeCamera" style="width:24px;height:24px;display:flex">${I.x}</span><span class="kicker" style="color:#f3f2f2">${c.busy ? '识别中…' : '拍照识别'}</span><span style="width:24px"></span></div>
+  <div class="row" style="padding:10px 20px;border-bottom:2px solid rgba(243,242,242,.4)"><span data-act="closeCamera" style="width:24px;height:24px;display:flex">${I.x}</span><span class="kicker" style="color:#f3f2f2" id="camstatus">${c.busy ? '识别中…' : '拍照识别'}</span><span style="width:24px"></span></div>
   <div style="flex:1;position:relative;margin:20px;overflow:hidden;display:flex;align-items:center;justify-content:center;background:#2d2b2b">
     ${c.photo ? `<img src="${c.photo}" class="gray" style="width:100%;height:100%;object-fit:cover">` : `<div class="muted" style="font-size:13px;color:#bab6b6;text-align:center;padding:0 24px">快门开相机拍这一餐，或左下「相册」选已有照片。<br>一次拍全整桌菜也可以。</div>`}
     <div class="corner tl"></div><div class="corner tr"></div><div class="corner bl"></div><div class="corner br"></div>
@@ -618,7 +622,7 @@ const A = {
   summaryHome: () => go('home'),
   // 饮食
   camera: () => { U.camera = { label: mealLabelByTime(), busy: false, photo: null, from: U.screen }; go('camera'); setTimeout(() => { const f = document.getElementById('camfile'); if (f) f.click(); }, 60); },
-  closeCamera: () => { const f = U.camera?.from; U.camera = null; go(f && f !== 'camera' ? f : 'home'); },
+  closeCamera: () => { KD_AI.abort(); const f = U.camera?.from; U.camera = null; go(f && f !== 'camera' ? f : 'home'); },
   cycleLabel: () => { const L = ['早餐', '午餐', '加餐', '晚餐']; U.camera.label = L[(L.indexOf(U.camera.label) + 1) % 4]; render(); },
   cycleResultLabel: () => { const L = ['早餐', '午餐', '加餐', '晚餐']; U.result.label = L[(L.indexOf(U.result.label) + 1) % 4]; render(); },
   closeResult: () => { const f = U.result.from; U.result = null; go(f || 'home'); },
@@ -655,6 +659,7 @@ const A = {
   regen: () => { if (!confirm('把本周未完成的天按当前设置重排？已完成的记录不变。')) return; const t = today(), fresh_ = buildWeek(S.week.start); S.week.days = S.week.days.map((d, i) => d.date < t || (S.logs[d.date] && S.logs[d.date].sets.length) ? d : fresh_.days[i]); S.week.note = ''; save(); render(); toast('本周剩余训练已重排'); },
   apiKey: d => { const k = d.k || 'apiKey'; const v = prompt(k === 'geminiKey' ? 'Gemini API key（只存本机）' : 'Anthropic API key（只存本机）', S.prefs[k]); if (v == null) return; S.prefs[k] = v.trim(); save(); render(); },
   provider: d => { S.prefs.provider = d.v; save(); render(); },
+  pingAI: async () => { U.busy = '正在连接…'; render(); try { const r = await KD_AI.ping(S.prefs); U.busy = ''; render(); toast(`连接正常 · ${r.ms} ms`, 3000); } catch (e) { U.busy = ''; render(); toast('失败：' + e.message, 5000); } },
   exportData: () => { const blob = new Blob([JSON.stringify(S, null, 1)], { type: 'application/json' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `kedu-${today()}.json`; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000); },
   importData: () => { const f = document.createElement('input'); f.type = 'file'; f.accept = 'application/json,.json'; f.onchange = () => { const r = new FileReader(); r.onload = () => { try { const j = JSON.parse(r.result); if (j.v !== 1 || !j.profile) throw new Error('不是刻度的数据文件'); S = j; save(); ensureWeek(); go('home'); toast('已导入'); } catch (e) { toast('导入失败：' + e.message); } }; r.readAsText(f.files[0]); }; f.click(); },
   reloadApp: async () => { try { const r = await navigator.serviceWorker?.getRegistration(); if (r) await r.update(); } catch (_) {} location.reload(); },
@@ -676,6 +681,7 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) { en
 
 // 每秒：训练计时 / 休息倒计时（只改文字，不整页重绘）
 setInterval(() => {
+  if (U.screen === 'camera' && U.camera && U.camera.busy) { const el = document.getElementById('camstatus'); if (el) el.textContent = `识别中… ${Math.round((Date.now() - U.camera.t0) / 1000)}s`; }
   if (U.screen !== 'workout' || !S.active) return;
   const a = S.active, el = document.getElementById('elapsed'); if (el) el.textContent = mmss(elapsed());
   if (a.resting) {

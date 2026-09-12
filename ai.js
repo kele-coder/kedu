@@ -8,9 +8,9 @@ const keyOf = prefs => prefs.provider === 'gemini' ? prefs.geminiKey : prefs.api
 const hasKey = prefs => !!(keyOf(prefs) || '').trim();
 const parseJSON = t => JSON.parse(String(t).replace(/^\s*```(?:json)?\s*/i, '').replace(/\s*```\s*$/, ''));
 
-async function callClaude(apiKey, { system, content, schema: sc, effort }) {
+async function callClaude(apiKey, { system, content, schema: sc, effort, signal }) {
   const r = await fetch(CLAUDE_API, {
-    method: 'POST',
+    method: 'POST', signal,
     headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
     body: JSON.stringify({ model: CLAUDE_MODEL, max_tokens: 16000, thinking: { type: 'adaptive' }, system, messages: [{ role: 'user', content }], output_config: { effort, format: sc } }),
   });
@@ -19,13 +19,14 @@ async function callClaude(apiKey, { system, content, schema: sc, effort }) {
   if (j.stop_reason === 'refusal') throw new Error('模型拒绝了这次请求');
   return parseJSON((j.content || []).filter(b => b.type === 'text').map(b => b.text).join(''));
 }
-async function callGemini(apiKey, { system, content, schema: sc }) {
+async function callGemini(apiKey, { system, content, schema: sc, signal }) {
   const parts = content.map(b => b.type === 'image' ? { inline_data: { mime_type: b.source.media_type, data: b.source.data } } : { text: b.text });
   const body = { system_instruction: { parts: [{ text: system }] }, contents: [{ role: 'user', parts }], generationConfig: { responseMimeType: 'application/json', responseJsonSchema: sc.schema } };
-  let r = await fetch(GEMINI_API(GEMINI_MODEL), { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey }, body: JSON.stringify(body) });
+  const opts = () => ({ method: 'POST', signal, headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey }, body: JSON.stringify(body) });
+  let r = await fetch(GEMINI_API(GEMINI_MODEL), opts());
   if (r.status === 400) { // 个别 schema 关键字不被接受时退回：只要求 JSON，靠提示词约束
     delete body.generationConfig.responseJsonSchema; body.contents[0].parts.push({ text: '\n只输出符合以下 JSON Schema 的 JSON：' + JSON.stringify(sc.schema) });
-    r = await fetch(GEMINI_API(GEMINI_MODEL), { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey }, body: JSON.stringify(body) });
+    r = await fetch(GEMINI_API(GEMINI_MODEL), opts());
   }
   if (!r.ok) { let msg = `HTTP ${r.status}`; try { const j = await r.json(); msg = j.error?.message || msg; } catch (_) {} throw new Error(msg); }
   const j = await r.json();
@@ -33,10 +34,21 @@ async function callGemini(apiKey, { system, content, schema: sc }) {
   if (!c || !c.content) throw new Error(c && c.finishReason ? `模型未返回内容（${c.finishReason}）` : '模型未返回内容');
   return parseJSON((c.content.parts || []).map(p => p.text || '').join(''));
 }
-async function call(prefs, req) {
+let lastError = '';
+async function call(prefs, req, timeoutMs = 45000) {
   const key = (keyOf(prefs) || '').trim();
   if (!key) throw new Error('NO_KEY');
-  return prefs.provider === 'gemini' ? callGemini(key, req) : callClaude(key, req);
+  const ac = new AbortController(); const t = setTimeout(() => ac.abort(), timeoutMs); req.signal = ac.signal; call.abort = () => ac.abort();
+  const t0 = Date.now();
+  try { return await (prefs.provider === 'gemini' ? callGemini(key, req) : callClaude(key, req)); }
+  catch (e) { const msg = e.name === 'AbortError' ? `超时（${Math.round((Date.now() - t0) / 1000)}s 无响应）` : e.message; lastError = `${new Date().toLocaleTimeString()} ${prefs.provider}: ${msg}`; throw new Error(msg); }
+  finally { clearTimeout(t); call.abort = null; }
+}
+// 诊断：发一个最小文本请求，返回耗时
+async function ping(prefs) {
+  const t0 = Date.now();
+  const r = await call(prefs, { system: '只输出 JSON。', content: [{ type: 'text', text: '回复 {"ok":true}' }], effort: 'low', schema: schema({ ok: { type: 'boolean' } }, ['ok']) }, 30000);
+  return { ok: !!r.ok, ms: Date.now() - t0 };
 }
 
 const schema = (properties, required) => ({ type: 'json_schema', schema: { type: 'object', properties, required, additionalProperties: false } });
@@ -103,5 +115,5 @@ async function lookupBarcode(code) {
   return { n: `${name}${p.brands ? ' · ' + p.brands.split(',')[0] : ''}`, u: sq ? `1 份 ${p.serving_size || sq + 'g'}` : '100g', k: kcal, p: num('proteins_100g'), c: num('carbohydrates_100g'), f: num('fat_100g'), code };
 }
 
-return { recognizeFood, generatePlan, weeklyReview, lookupBarcode, hasKey };
+return { recognizeFood, generatePlan, weeklyReview, lookupBarcode, hasKey, ping, abort: () => call.abort && call.abort(), lastError: () => lastError, model: prefs => prefs.provider === 'gemini' ? GEMINI_MODEL : CLAUDE_MODEL };
 })();
