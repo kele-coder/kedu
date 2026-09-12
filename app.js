@@ -42,7 +42,8 @@ const KEY = 'kedu.v1';
 const fresh = () => ({
   v: 1, onboarded: false, ob: { step: 0, answers: {} },
   profile: { goal: '减脂', sex: '男', age: 30, height: 175, weight: 72, target: 68, activity: '轻度活动', place: '健身房', days: 5, kcalOverride: 0, core: true, level: '进阶' },
-  prefs: { theme: 'auto', restMode: 'auto', restSec: 0, provider: 'gemini', apiKey: '', geminiKey: '', extraBurn: 0, sound: true },
+  prefs: { theme: 'auto', restMode: 'auto', restSec: 0, provider: 'gemini', apiKey: '', geminiKey: '', extraBurn: 0, sound: true, warmup: true, rpe: true, bar: 20 },
+  calib: null,
   week: null, nextWeek: null, history: [], logs: {}, meals: {}, weights: [], burn: {}, progress: {}, customFoods: [], recent: [], foodMemory: {}, active: null,
 });
 let S; try { S = JSON.parse(localStorage.getItem(KEY)); } catch (_) { S = null; }
@@ -51,10 +52,12 @@ if (!S.prefs.provider) Object.assign(S.prefs, { provider: S.prefs.apiKey ? 'clau
 if (!S.foodMemory) S.foodMemory = {};
 if (S.profile.core == null) S.profile.core = true;
 if (!S.profile.level) S.profile.level = '进阶';
+if (S.prefs.warmup == null) Object.assign(S.prefs, { warmup: true, rpe: true, bar: 20 });
+if (S.calib === undefined) S.calib = null;
 const save = () => { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { toast('保存失败：' + e.message); } };
 
 // 界面临时状态（不持久化）
-const U = { screen: S.onboarded ? 'home' : 'onboard', selDay: 0, toast: '', exDetail: null, video: false, weigh: null, weekly: null, search: null, camera: null, result: null, busy: '', obDraft: null, editEx: null, sheet: null, anim: new Set() };
+const U = { foodDate: today(), screen: S.onboarded ? 'home' : 'onboard', selDay: 0, toast: '', exDetail: null, video: false, weigh: null, weekly: null, search: null, camera: null, result: null, busy: '', obDraft: null, editEx: null, sheet: null, anim: new Set() };
 const open_ = (k, v) => { U[k] = v; U.anim.add(k); };
 let toastT = 0;
 const toast = (t, ms = 2200) => { U.toast = t; clearTimeout(toastT); toastT = setTimeout(() => { U.toast = ''; const el = document.getElementById('toast'); if (el) el.remove(); }, ms); const el = document.getElementById('toast'); if (el) el.textContent = t; else { const d = document.createElement('div'); d.id = 'toast'; d.className = 'toast'; d.textContent = t; root.appendChild(d); } };
@@ -70,7 +73,7 @@ function rSheet() {
     <div class="row" style="flex:none"><span class="h" style="font-size:18px">${esc(sh.title)}</span><span data-act="sheetCancel" style="width:24px;height:24px;display:flex">${I.x}</span></div>
     ${sh.note ? `<div class="muted" style="font-size:12px;margin-top:6px;line-height:1.5">${esc(sh.note)}</div>` : ''}
     <div class="scroll" style="margin-top:12px">${fields}${opts}</div>
-    ${sh.confirm ? `<div style="margin-top:12px;flex:none">${btn(sh.confirm.label, 'sheetOk', '', I.check, sh.confirm.danger ? '' : '')}</div>` : sh.fields ? `<div style="margin-top:12px;flex:none">${btn(sh.okLabel || '确定', 'sheetOk', '', I.check)}</div>` : ''}</div></div>`;
+    ${sh.confirm ? `<div style="margin-top:12px;flex:none">${btn(sh.confirm.label, 'sheetOk', '', I.check)}</div>` : (sh.fields && sh.fields.length) || !(sh.options || []).length ? `<div style="margin-top:12px;flex:none">${btn(sh.okLabel || '确定', 'sheetOk', '', I.check)}</div>` : ''}</div></div>`;
 }
 const sheetClose = v => { const sh = U.sheet; U.sheet = null; render(); if (sh) sh.res(v); };
 
@@ -80,15 +83,34 @@ function targets() {
   const p = S.profile, w = latestWeight();
   const bmr = 10 * w + 6.25 * p.height - 5 * p.age + (p.sex === '男' ? 5 : -161);
   const act = { '久坐': 1.2, '轻度活动': 1.375, '中度活动': 1.55 }[p.activity] || 1.375;
-  const tdee = bmr * act;
+  const tdee = S.calib ? S.calib.daily : bmr * act;
   const adj = { '减脂': -500, '增肌': 300, '保持健康': 0 }[p.goal] || 0;
   const floor = p.sex === '男' ? 1500 : 1200;
   const kcal = p.kcalOverride || Math.max(floor, Math.round((tdee + adj) / 10) * 10);
   const protein = Math.round(w * ({ '减脂': 2.0, '增肌': 1.8, '保持健康': 1.6 }[p.goal] || 1.6));
   const fat = Math.round(kcal * 0.25 / 9);
   const carbs = Math.max(0, Math.round((kcal - protein * 4 - fat * 9) / 4));
-  return { bmr: Math.round(bmr), tdee: Math.round(tdee), kcal, protein, fat, carbs, daily: Math.round(tdee) };
+  return { bmr: Math.round(bmr), tdee: Math.round(tdee), formula: Math.round(bmr * act), kcal, protein, fat, carbs, daily: Math.round(tdee), calibrated: !!S.calib };
 }
+// MacroFactor 式校准：近 28 天「平均摄入 − 趋势体重变化×7700/天数」= 实测总消耗；减去训练/手表消耗得日常消耗
+function calibrate() {
+  const t = today(), from = addDays(t, -28);
+  const days = []; for (let d = from; d <= t; d = addDays(d, 1)) days.push(d);
+  const logged = days.filter(d => mealsOf(d).length >= 2 || consumedOf(d) >= 800);
+  const tr = trend(), ws = S.weights.map((w, i) => ({ ...w, e: tr[i] })).filter(w => w.date >= from && w.date <= t);
+  if (logged.length < 10 || ws.length < 5) return { ok: false, reason: `需要 ≥10 天饮食记录（现 ${logged.length}）和 ≥5 次体重（现 ${ws.length}）` };
+  const span = (parse(ws[ws.length - 1].date) - parse(ws[0].date)) / 86400000; if (span < 10) return { ok: false, reason: '体重记录跨度不足 10 天' };
+  const avgIn = logged.reduce((a, d) => a + consumedOf(d), 0) / logged.length;
+  // 体重变化率用窗口内原始体重的线性回归斜率（EMA 在短窗口内滞后 ~10 天，会低估）
+  const xs = ws.map(w => (parse(w.date) - parse(ws[0].date)) / 86400000), ys = ws.map(w => w.kg), mx = xs.reduce((a, b) => a + b, 0) / xs.length, my = ys.reduce((a, b) => a + b, 0) / ys.length;
+  const slope = xs.reduce((a, x, i) => a + (x - mx) * (ys[i] - my), 0) / (xs.reduce((a, x) => a + (x - mx) ** 2, 0) || 1);
+  const dW = slope * span, perDay = slope * 7700;
+  const activity = logged.reduce((a, d) => a + workoutBurnOf(d) + (S.burn[d] || 0), 0) / logged.length;
+  const total = avgIn - perDay, daily = Math.round((total - activity) / 10) * 10;
+  const T = targets(), lo = Math.round(T.formula * 0.7), hi = Math.round(T.formula * 1.4);
+  return { ok: true, daily: Math.min(hi, Math.max(lo, daily)), raw: daily, avgIn: Math.round(avgIn), dW: +dW.toFixed(2), span: Math.round(span), n: logged.length, formula: T.formula, at: t };
+}
+
 function trend() { // 20 日 EMA（α=0.1），MacroFactor 同款思路
   const ws = S.weights; if (!ws.length) return [];
   let e = ws[0].kg; return ws.map(w => (e = e + 0.1 * (w.kg - e)));
@@ -156,12 +178,16 @@ function beep() {
   try { const ac = new (window.AudioContext || window.webkitAudioContext)(); [0, 0.25].forEach(t => { const o = ac.createOscillator(), g = ac.createGain(); o.connect(g); g.connect(ac.destination); o.frequency.value = 880; g.gain.setValueAtTime(0.25, ac.currentTime + t); g.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + t + 0.18); o.start(ac.currentTime + t); o.stop(ac.currentTime + t + 0.2); }); } catch (_) {}
 }
 const restFor = name => S.prefs.restSec || exInfo(name).rest || 90;
+const isBarbell = name => /杠铃|卧推|硬拉|深蹲|划船|臀推|推举/.test(name) && !/哑铃|绳索|弹力带|高脚杯|单腿|单臂|俯卧撑|保加利亚/.test(name);
+const warmSets = (e, kg) => (!S.prefs.warmup || e.unit || kg < 30 || exInfo(e.name).cat === 'core' || exInfo(e.name).cat === 'cardio') ? [] : [{ kg: Math.round(kg * 0.5 / 2.5) * 2.5, reps: 8 }, { kg: Math.round(kg * 0.75 / 2.5) * 2.5, reps: 4 }];
+const plates = (total, bar) => { let side = (total - bar) / 2; if (side < 0) return null; const out = []; for (const p of [25, 20, 15, 10, 5, 2.5, 1.25]) { while (side >= p - 1e-9) { out.push(p); side -= p; } } return { out, rest: +side.toFixed(2) }; }
+
 function startWorkout(dayIdx) {
   const d = S.week.days[dayIdx];
   if (!d.ex.length) { toast('这天是休息日，去「训练」里安排'); return; }
   if (S.active && S.active.dayIdx === dayIdx && S.active.date === d.date) { U.screen = 'workout'; render(); return; }
   const e = d.ex[0], last = lastSetOf(e.name);
-  S.active = { date: d.date, dayIdx, exIdx: 0, setIdx: 0, kg: last && last.kg >= e.kg ? last.kg : e.kg, reps: e.reps, startedAt: Date.now(), resting: false, restStart: 0, restEnd: 0, sets: [], burn: 0 };
+  S.active = { date: d.date, dayIdx, exIdx: 0, setIdx: 0, kg: last && last.kg >= e.kg ? last.kg : e.kg, reps: e.reps, startedAt: Date.now(), resting: false, restStart: 0, restEnd: 0, sets: [], burn: 0, warm: 0, rpe: 0 };
   save(); U.screen = 'workout'; render();
 }
 const elapsed = () => S.active ? Math.floor((Date.now() - S.active.startedAt) / 1000) : 0;
@@ -171,10 +197,16 @@ function sessionBurn(dayIdx, sec) { // MET × kg × 小时。力量 5 MET，有�
 }
 function completeSet() {
   const a = S.active, d = S.week.days[a.dayIdx], e = d.ex[a.exIdx];
-  a.sets.push({ ex: e.name, set: a.setIdx, kg: e.unit ? 0 : a.kg, reps: a.reps, unit: e.unit || '', t: Date.now() });
+  const ws = a.setIdx === 0 ? warmSets(e, a.kg) : [];
+  if (a.warm < ws.length) { // 热身组：不计入正式记录，短休息
+    a.warm++; if (navigator.vibrate) navigator.vibrate(30);
+    if (S.prefs.restMode === 'auto' && a.warm <= ws.length) { U.anim.add('rest'); a.resting = true; a.restStart = Date.now(); a.restEnd = Date.now() + 45 * 1000; }
+    save(); render(); return;
+  }
+  a.sets.push({ ex: e.name, set: a.setIdx, kg: e.unit ? 0 : a.kg, reps: a.reps, unit: e.unit || '', rpe: a.rpe || 0, t: Date.now() }); a.rpe = 0;
   const lastSet = a.setIdx >= e.sets - 1, lastEx = a.exIdx >= d.ex.length - 1;
   if (lastSet && lastEx) { finishWorkout(); return; }
-  if (lastSet) { const n = d.ex[a.exIdx + 1], last = lastSetOf(n.name); a.exIdx++; a.setIdx = 0; a.kg = last && last.kg >= n.kg ? last.kg : n.kg; a.reps = n.reps; }
+  if (lastSet) { const n = d.ex[a.exIdx + 1], last = lastSetOf(n.name); a.exIdx++; a.setIdx = 0; a.warm = 0; a.kg = last && last.kg >= n.kg ? last.kg : n.kg; a.reps = n.reps; }
   else a.setIdx++;
   if (navigator.vibrate) navigator.vibrate(30);
   if (S.prefs.restMode === 'auto') { const sec = restFor(e.name); if (sec > 0) { U.anim.add('rest'); a.resting = true; a.restStart = Date.now(); a.restEnd = Date.now() + sec * 1000; } }
@@ -192,10 +224,11 @@ function finishWorkout() {
     if (e.unit) return;
     const s = a.sets.filter(x => x.ex === e.name);
     const inc = exInfo(e.name).inc;
-    if (s.length >= e.sets && s.every(x => x.reps >= e.reps && x.kg >= e.kg) && inc > 0) {
+    const hard = s.some(x => x.rpe >= 9.5);
+    if (s.length >= e.sets && s.every(x => x.reps >= e.reps && x.kg >= e.kg) && inc > 0 && !hard) {
       const next = +(Math.max(...s.map(x => x.kg)) + inc).toFixed(1); S.progress[e.name] = next; notes.push(`${e.name} 下次 ${next}kg`);
       S.week.days.forEach((dd, i) => { if (i > a.dayIdx) dd.ex.forEach(x => { if (x.name === e.name) x.kg = next; }); });
-    } else if (s.length) S.progress[e.name] = Math.max(...s.map(x => x.kg));
+    } else if (s.length) { S.progress[e.name] = Math.max(...s.map(x => x.kg)); if (hard && s.length >= e.sets && s.every(x => x.reps >= e.reps)) notes.push(`${e.name} 达标但 RPE 10，先稳一周`); }
   });
   log.notes = notes;
   S.active = null; save(); lockScreen(false);
@@ -208,8 +241,8 @@ function prs() { // 每个动作的最佳估算 1RM
 }
 
 // ─── 饮食
-function addMeal(label, items) {
-  const d = today(), meals = S.meals[d] || (S.meals[d] = []);
+function addMeal(label, items, date) {
+  const d = date || (U.screen === 'food' || U.result || U.search ? U.foodDate : today()), meals = S.meals[d] || (S.meals[d] = []);
   meals.push({ time: nowHM(), label, desc: items.map(i => i.n).join(' · '), kcal: sum(items, 'k'), p: sum(items, 'p'), c: sum(items, 'c'), f: sum(items, 'f'), items });
   items.forEach(i => { S.recent = [i, ...S.recent.filter(x => x.n !== i.n)].slice(0, 12); });
   save();
@@ -421,17 +454,19 @@ function rPlan() {
 }
 
 function rFood() {
-  const d = today(), T = targets(), meals = mealsOf(d), consumed = consumedOf(d), rem = T.kcal - consumed;
+  const d = U.foodDate, isToday = d === today(), T = targets(), meals = mealsOf(d), consumed = consumedOf(d), rem = T.kcal - consumed;
   const seg = meals.map((m, i) => `<div style="width:${Math.min(100, m.kcal / T.kcal * 100)}%;background:${i % 2 ? 'var(--n700)' : 'var(--fg)'}"></div>`).join('');
   const rows = meals.map((m, i) => `<div style="display:flex;gap:12px;padding:12px 0;border-top:1px solid var(--line);align-items:center"><div class="stripes" style="width:48px;height:48px;flex:none"></div><div style="flex:1;min-width:0"><div class="kicker">${m.time} ${m.label}</div><div style="font-size:13px;margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(m.desc)}</div><div class="muted" style="font-size:11px;margin-top:2px">蛋白 ${m.p} · 碳水 ${m.c} · 脂肪 ${m.f}</div></div><div style="font-size:15px;font-weight:800">${fmt(m.kcal)}</div><span class="muted" data-act="delMeal" data-i="${i}" style="padding:6px 0 6px 6px">${I.x.replace('<svg', '<svg width="14" height="14"')}</span></div>`).join('');
+  const quick = [...S.recent].slice(0, 8);
   const st = weekStats();
-  return `<div class="screen">${topbar('饮食', `${md(d)} · 目标 ${fmt(T.kcal)}`)}
+  return `<div class="screen">${topbar('饮食', `<span data-act="foodDay" data-d="-1" style="padding:0 8px">‹</span>${isToday ? '今天' : `周${WD[dow(d) - 1]} ${md(d)}`}<span data-act="foodDay" data-d="1" style="padding:0 0 0 8px;${isToday ? 'opacity:.3' : ''}">›</span>`)}
   <div class="scroll" style="padding:14px 20px 0">
     <div class="row" style="align-items:baseline"><div><span class="big" style="font-size:40px">${fmt(consumed)}</span><span class="muted" style="font-size:13px;margin-left:6px">/ ${fmt(T.kcal)} kcal</span></div><span class="acc" style="font-size:13px;font-weight:600">${rem >= 0 ? '剩 ' + fmt(rem) : '超 ' + fmt(-rem)}</span></div>
     <div style="display:flex;height:8px;background:var(--track);margin:10px 0 12px">${seg}</div>
     <div class="grid3" style="border-top:2px solid var(--line);border-bottom:2px solid var(--line);margin-bottom:4px">${[['蛋白', sum(meals, 'p'), T.protein], ['碳水', sum(meals, 'c'), T.carbs], ['脂肪', sum(meals, 'f'), T.fat]].map(([l, v, t], i) => `<div style="padding:10px 0 10px ${i ? 12 : 0}px;${i < 2 ? 'border-right:2px solid var(--line)' : ''}"><div class="kicker">${l}</div><div style="font-size:14px;margin-top:3px"><b>${v}</b> / ${t}g</div></div>`).join('')}</div>
-    ${rows || '<div class="muted" style="padding:16px 0;font-size:13px">今天还没有记录。拍一张，或者搜索。</div>'}
-    <div style="display:flex;gap:18px;padding:12px 0;border-top:1px solid var(--line)"><span class="link" data-act="camera">📷 拍照记录${mealLabelByTime()}</span><span class="link" data-act="openSearch">🔍 搜索 / 扫码</span><span class="link" data-act="extraBurn">⌚ 手表消耗</span></div>
+    ${rows || `<div class="muted" style="padding:16px 0;font-size:13px">${isToday ? '今天还没有记录。拍一张，或者搜索。' : '这天没有记录。'}</div>`}
+    <div style="display:flex;gap:18px;padding:12px 0;border-top:1px solid var(--line);flex-wrap:wrap"><span class="link" data-act="camera">📷 拍照记录${mealLabelByTime()}</span><span class="link" data-act="openSearch">🔍 搜索 / 扫码</span><span class="link" data-act="copyMeal">⧉ 复制前一天</span>${isToday ? `<span class="link" data-act="extraBurn">⌚ 手表消耗</span>` : ''}</div>
+    ${quick.length ? `<div class="kicker" style="margin:6px 0 8px">常吃 · 点一下记入${mealLabelByTime()}</div><div>${quick.map((f, i) => `<span class="chip" data-act="quickAdd" data-i="${i}" style="border-color:var(--line);color:var(--fg)">${esc(f.n)} <span class="muted">${f.k}</span></span>`).join('')}</div>` : ''}
     <div style="height:16px"></div></div>
   <div style="padding:10px 20px;border-top:2px solid var(--line);display:flex;justify-content:space-between;font-size:12px" class="muted"><span>消耗 ${fmt(burnedOf(d))} · 热量差 ${deficitOf(d) > 0 ? '+' : ''}${fmt(deficitOf(d))}</span><span>本周均 ${st.loggedDays ? (st.avgDef > 0 ? '+' : '') + fmt(st.avgDef) : '—'}</span></div>
   ${nav()}</div>`;
@@ -474,7 +509,7 @@ function rProfile() {
     <div class="grid3" style="border-bottom:2px solid var(--line)">${[['身高', p.height, 'cm', 'height'], ['体重', w.toFixed(1), 'kg', ''], ['目标', p.target.toFixed(1), 'kg', 'target']].map(([l, v, u, k], i) => `<div data-act="${k ? 'editNum' : 'weigh'}" data-k="${k}" style="padding:14px 0;${i < 2 ? 'border-right:2px solid var(--line);' : ''}${i ? 'padding-left:12px' : ''}"><div class="kicker">${l}</div><div class="big" style="font-size:20px;margin-top:6px">${v}<span class="muted" style="font-size:11px;font-weight:400;margin-left:3px">${u}</span></div></div>`).join('')}</div>
     <div class="kicker" style="margin:14px 0 2px">目标与计划</div>
     ${row('每日热量目标', `${fmt(T.kcal)} kcal${p.kcalOverride ? ' · 手动' : ' · 自动'}`, 'editNum', 'data-k="kcalOverride"')}
-    ${row('日常消耗（TDEE）· 基础代谢', `${fmt(T.tdee)} · ${fmt(T.bmr)}`, '')}
+    ${row('日常消耗（TDEE）· 基础代谢', `${fmt(T.tdee)}${T.calibrated ? ' 实测' : ' 公式'} · ${fmt(T.bmr)}`, 'calib')}
     ${row('蛋白 / 碳水 / 脂肪', `${T.protein} / ${T.carbs} / ${T.fat} g`, '')}
     ${row('目标', p.goal, 'cycle', 'data-k="goal"')}
     ${row('训练经验', p.level === '新手' ? '新手 · 低量全身' : p.level === '老手' ? '老手 · 主项加量' : '进阶 · 分化', 'cycle', 'data-k="level"')}
@@ -488,6 +523,8 @@ function rProfile() {
     <div class="list-row"><span style="font-size:14px">组间休息</span><div class="seg" style="width:180px">${rest}</div></div>
     ${row('休息时长', S.prefs.restSec ? S.prefs.restSec + ' 秒 · 固定' : '按动作（复合 120 · 孤立 60 · 核心 45）', 'editNum', 'data-k="restSec"')}
     ${row('休息结束提示音', S.prefs.sound ? '开' : '关（仅震动）', 'toggleSound')}
+    ${row('自动热身组', S.prefs.warmup ? '≥30kg 的动作前 2 组（50% · 75%）' : '关', 'toggleWarm')}
+    ${row('记录 RPE', S.prefs.rpe ? '开 · 达标但 RPE 10 不加重' : '关', 'toggleRpe')}
     <div class="kicker" style="margin:14px 0 2px">数据与外观</div>
     <div class="list-row"><span style="font-size:14px">外观</span><div class="seg" style="width:200px">${seg}</div></div>
     <div class="list-row"><span style="font-size:14px">AI 服务商</span><div class="seg" style="width:180px">${[['gemini', 'Gemini · 免费'], ['claude', 'Claude']].map(([v, l]) => `<div class="${S.prefs.provider === v ? 'on' : ''}" data-act="provider" data-v="${v}">${l}</div>`).join('')}</div></div>
@@ -499,7 +536,7 @@ function rProfile() {
     ${row('导入数据', '选择文件 ›', 'importData')}
     ${row('重新走一遍引导', '›', 'restart')}
     ${row('清空全部数据', '›', 'wipe')}
-    <div class="muted" style="font-size:11px;padding:16px 0 24px" data-act="reloadApp">刻度 v8 · 数据只存在这台手机的浏览器里 · 点此检查更新</div>
+    <div class="muted" style="font-size:11px;padding:16px 0 24px" data-act="reloadApp">刻度 v9 · 数据只存在这台手机的浏览器里 · 点此检查更新</div>
   </div>${nav()}</div>`;
 }
 
@@ -545,6 +582,7 @@ function rResult() {
 function rWorkout() {
   const a = S.active, d = S.week.days[a.dayIdx], e = d.ex[a.exIdx], timed = !!e.unit, info = exInfo(e.name);
   const last = lastSetOf(e.name), nextEx = d.ex[a.exIdx + 1], lastSet = a.setIdx === e.sets - 1;
+  const ws = a.setIdx === 0 ? warmSets(e, a.kg) : [], warming = a.warm < ws.length, wsCur = warming ? ws[a.warm] : null;
   const bars = Array.from({ length: e.sets }, (_, i) => `<div style="flex:1;height:4px;background:${i < a.setIdx ? 'var(--fg)' : i === a.setIdx ? 'var(--acc)' : 'var(--track)'}"></div>`).join('');
   const restLeft = Math.max(0, Math.ceil((a.restEnd - Date.now()) / 1000)), restSince = Math.floor((Date.now() - a.restStart) / 1000);
   const rest = a.resting ? `<div class="overlay ${U.anim.has('rest') ? 'enter' : ''}" data-act="endRest" style="justify-content:center;align-items:flex-start;padding:0 20px"><div class="kicker acc">组间休息${S.prefs.restMode === 'auto' ? ' · 倒计时' : ' · 正计时'}</div><div class="big" id="rest-num" style="font-size:120px;margin:12px 0">${S.prefs.restMode === 'auto' ? mmss(restLeft) : mmss(restSince)}</div><div class="muted" style="font-size:13px">${S.prefs.restMode === 'auto' ? `建议 ${restFor(d.ex[a.exIdx].name)} 秒` : `建议 ${info.rest} 秒`} · 下一组 ${timed ? '' : a.kg + 'kg × '}${a.reps}${e.unit || ''}</div>
@@ -553,14 +591,15 @@ function rWorkout() {
   <div class="row" style="padding:10px 20px;border-bottom:2px solid var(--line)"><span data-act="exDetail" data-name="${esc(e.name)}" style="font-size:13px;font-weight:600;display:flex;align-items:center;gap:6px;min-width:0"><span class="muted tab">${a.exIdx + 1} / ${d.ex.length}</span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${e.name}</span>${I.tri.replace('<svg', '<svg width="12" height="12"')}</span><span class="tab" id="elapsed" style="font-weight:800;font-size:16px">${mmss(elapsed())}</span><span class="link" data-act="finish" style="font-size:13px">结束</span></div>
   <div style="display:flex;gap:3px;padding:10px 20px 0">${bars}</div>
   <div class="scroll" style="display:flex;flex-direction:column;justify-content:center;padding:0 20px">
-    <div class="kicker acc">第 ${a.setIdx + 1} 组 / ${e.sets}</div>
+    <div class="kicker acc">${warming ? `热身 ${a.warm + 1} / ${ws.length} · 正式重量 ${a.kg}kg` : `第 ${a.setIdx + 1} 组 / ${e.sets}`}</div>
     <div class="grid2" style="border-top:2px solid var(--line);border-bottom:2px solid var(--line);margin:12px 0">
-      <div style="padding:16px 12px 16px 0;border-right:2px solid var(--line);${timed ? 'opacity:.35' : ''}"><div class="kicker">${timed ? '—' : e.kg === 0 && a.kg === 0 ? '自重 · 加重 kg' : '重量 kg'}</div><div class="big" style="font-size:56px;margin:10px 0 12px">${timed ? '—' : a.kg}</div><div style="display:flex;gap:8px"><div class="step" data-act="kg" data-d="-2.5">${I.minus}</div><div class="step" data-act="kg" data-d="2.5">${I.plus}</div></div></div>
-      <div style="padding:16px 0 16px 12px"><div class="kicker">${timed ? `时长 ${e.unit}` : '次数'}</div><div class="big" style="font-size:56px;margin:10px 0 12px">${a.reps}</div><div style="display:flex;gap:8px"><div class="step" data-act="reps" data-d="${timed ? -5 : -1}">${I.minus}</div><div class="step" data-act="reps" data-d="${timed ? 5 : 1}">${I.plus}</div></div></div>
+      <div style="padding:16px 12px 16px 0;border-right:2px solid var(--line);${timed ? 'opacity:.35' : ''}"><div class="kicker">${timed ? '—' : e.kg === 0 && a.kg === 0 ? '自重 · 加重 kg' : '重量 kg'}</div><div class="big" ${isBarbell(e.name) && !timed ? 'data-act="plates"' : ''} style="font-size:56px;margin:10px 0 12px">${timed ? '—' : warming ? wsCur.kg : a.kg}</div><div style="display:flex;gap:8px"><div class="step" data-act="kg" data-d="-2.5">${I.minus}</div><div class="step" data-act="kg" data-d="2.5">${I.plus}</div></div></div>
+      <div style="padding:16px 0 16px 12px"><div class="kicker">${timed ? `时长 ${e.unit}` : '次数'}</div><div class="big" style="font-size:56px;margin:10px 0 12px">${warming ? wsCur.reps : a.reps}</div><div style="display:flex;gap:8px"><div class="step" data-act="reps" data-d="${timed ? -5 : -1}">${I.minus}</div><div class="step" data-act="reps" data-d="${timed ? 5 : 1}">${I.plus}</div></div></div>
     </div>
-    <div class="muted" style="font-size:12px">${last && !timed ? `上次 ${last.kg} × ${last.reps}` : `目标 ${e.reps}${e.unit || ''}`} · ${lastSet ? (nextEx ? `下一动作 ${nextEx.name}` : '最后一组') : `还剩 ${e.sets - a.setIdx - 1} 组`}${a.sets.filter(x => x.ex === e.name).length ? ' · 本次 ' + a.sets.filter(x => x.ex === e.name).map(x => timed ? x.reps : `${x.kg}×${x.reps}`).join(' / ') : ''}</div>
+    ${S.prefs.rpe && !timed && !warming ? `<div style="display:flex;align-items:center;gap:6px;margin-bottom:10px"><span class="kicker" style="margin-right:4px">RPE</span>${[6, 7, 8, 9, 10].map(v => `<div class="chip ${a.rpe === v ? 'on' : ''}" data-act="rpe" data-v="${v}" style="margin:0;padding:5px 10px;border-color:var(--line);color:${a.rpe === v ? '#fff' : 'var(--fg)'}">${v}</div>`).join('')}<span class="muted" style="font-size:10px;margin-left:4px">${a.rpe ? (a.rpe >= 10 ? '力竭' : a.rpe >= 9 ? '还能 1 次' : a.rpe >= 8 ? '还能 2 次' : '轻松') : '可选'}</span></div>` : ''}
+    <div class="muted" style="font-size:12px">${last && !timed ? `上次 ${last.kg} × ${last.reps}${last.rpe ? ' @' + last.rpe : ''}` : `目标 ${e.reps}${e.unit || ''}`} · ${lastSet ? (nextEx ? `下一动作 ${nextEx.name}` : '最后一组') : `还剩 ${e.sets - a.setIdx - 1} 组`}${a.sets.filter(x => x.ex === e.name).length ? ' · 本次 ' + a.sets.filter(x => x.ex === e.name).map(x => timed ? x.reps : `${x.kg}×${x.reps}`).join(' / ') : ''}</div>
   </div>
-  <div class="footer" style="display:flex;flex-direction:column;gap:8px">${btn(lastSet && !nextEx ? '完成训练' : lastSet ? '完成 · 下一动作' : '完成本组', 'completeSet', '', I.check)}<div style="display:flex;gap:8px"><button class="btn ghost" data-act="startRest"><span>开始休息 · ${S.prefs.restMode === 'auto' ? '倒计时' : '手动计时'}</span></button><button class="btn ghost" data-act="skipEx" style="width:auto;white-space:nowrap">跳过动作</button></div></div>
+  <div class="footer" style="display:flex;flex-direction:column;gap:8px">${btn(warming ? '热身完成' : lastSet && !nextEx ? '完成训练' : lastSet ? '完成 · 下一动作' : '完成本组', 'completeSet', '', I.check)}<div style="display:flex;gap:8px"><button class="btn ghost" data-act="startRest"><span>开始休息 · ${S.prefs.restMode === 'auto' ? '倒计时' : '手动计时'}</span></button>${warming ? '<button class="btn ghost" data-act="skipWarm" style="width:auto;white-space:nowrap">跳过热身</button>' : ''}<button class="btn ghost" data-act="skipEx" style="width:auto;white-space:nowrap">跳过动作</button></div></div>
   ${rest}</div>`;
 }
 
@@ -617,6 +656,7 @@ function rWeekly() {
       <div class="kicker acc">本周总结${w.ai ? ' · AI' : ''}</div><div class="h" style="font-size:30px;line-height:1.15;margin:6px 0 14px">${esc(rv.headline)}</div>
       <div class="grid2" style="border-top:2px solid var(--line);border-bottom:2px solid var(--line)">${[['训练完成', `${st.done} / ${st.planned}`, ''], ['训练消耗', fmt(st.burn) + ' kcal', ''], ['日均热量差', st.loggedDays ? (st.avgDef > 0 ? '+' : '') + fmt(st.avgDef) : '—', ''], ['体重变化', st.wDelta != null ? sign(st.wDelta) + ' kg' : '—', 'acc']].map(([k, v, c], i) => `<div style="padding:12px ${i % 2 ? '0 12px 12px' : '12px 12px 0'};${i % 2 === 0 ? 'border-right:2px solid var(--line);' : ''}${i < 2 ? 'border-bottom:2px solid var(--line)' : ''}"><div class="kicker">${k}</div><div class="big ${c}" style="font-size:22px;margin-top:6px">${v}</div></div>`).join('')}</div>
       <div class="kicker" style="margin:16px 0 4px">建议 · 下周</div>${rv.tips.map(t => `<div style="display:flex;gap:10px;align-items:flex-start;padding:8px 0"><span style="width:10px;height:10px;background:var(--acc);flex:none;margin-top:5px"></span><span style="font-size:13px;line-height:1.5">${esc(t)}</span></div>`).join('')}
+      ${(() => { const c = calibrate(); return c.ok ? `<div style="background:var(--acc-soft);padding:12px;margin-top:8px"><div class="kicker acc">热量校准</div><div style="font-size:13px;line-height:1.5;margin-top:4px">近 ${c.span} 天实测日常消耗 ≈ <b>${fmt(c.daily)}</b>（公式 ${fmt(c.formula)}${S.calib ? '，当前用 ' + fmt(S.calib.daily) : ''}）。</div><div style="margin-top:6px"><span class="link" data-act="calib">查看 / 采用 ›</span></div></div>` : ''; })()}
       ${!w.ai && KD_AI.hasKey(S.prefs) ? `<div style="padding:8px 0"><span class="link" data-act="aiReview">用 AI 重写周报 ›</span></div>` : ''}<div style="height:16px"></div></div>
     <div class="footer" style="display:flex;gap:8px"><button class="btn ghost" data-act="closeWeekly" style="flex:1"><span>稍后</span></button><div style="flex:2">${btn(S.nextWeek ? '重新生成下周' : '按建议生成下周', 'genNext')}</div></div></div>`;
 }
@@ -649,7 +689,7 @@ const cycles = { level: ['新手', '进阶', '老手'], goal: ['减脂', '增肌
 const numFields = { height: ['身高 cm', 120, 230], target: ['目标体重 kg', 30, 250], age: ['年龄', 14, 80], kcalOverride: ['每日热量目标 kcal（0 = 自动计算）', 0, 6000], restSec: ['固定休息秒数（0 = 按动作建议）', 0, 600] };
 const go = s => { U.screen = s; U.exDetail = null; render(); };
 const A = {
-  go: d => go(d.to),
+  go: d => { if (d.to === 'food') U.foodDate = today(); go(d.to); },
   // 引导
   obPick: d => { const q = OB[S.ob.step]; S.ob.answers[q.key] = q.key === 'days' ? +d.v : d.v; S.ob.step++; U.obDraft = null; save(); render(); },
   obStep: d => { const q = OB[S.ob.step], v = +(document.getElementById('obnum').value) || q.def; U.obDraft = +(Math.min(q.max, Math.max(q.min, v + (+d.d) * (q.step || 1))).toFixed(1)); render(); },
@@ -670,10 +710,13 @@ const A = {
   addSession: async () => { const v = await ask({ title: '安排训练', options: Object.keys(SESSIONS).map(k => ({ label: k, sub: `${SESSIONS[k].ex.length} 动作 · ${SESSIONS[k].mins} 分钟` })) }); if (!v) return; const s = SESSIONS[v], home = S.profile.place === '在家'; const day = S.week.days[U.selDay]; day.name = v; day.place = home ? '在家' : '健身房'; day.mins = s.mins; day.ex = s.ex.map(e => { const name = home ? homeOf(e.name) : e.name; return { name, sets: e.sets, reps: e.reps, kg: S.progress[name] ?? (name === e.name ? e.kg : 0), ...(e.unit ? { unit: e.unit } : {}) }; }); save(); render(); },
   moveTomorrow: () => { const i = U.selDay; if (i >= 6) { toast('已经是周日'); return; } const D = S.week.days, a = D[i], b = D[i + 1]; const swap = (x, y) => ({ ...y, date: x.date }); D[i] = swap(a, b); D[i + 1] = swap(b, a); if (S.active && (S.active.dayIdx === i || S.active.dayIdx === i + 1)) S.active = null; U.selDay = i + 1; save(); render(); },
   togglePlace: () => { const day = S.week.days[U.selDay], toHome = day.place !== '在家'; day.place = toHome ? '在家' : '健身房'; day.ex = day.ex.map(e => { const name = toHome ? homeOf(e.name) : gymOf(e.name); return { ...e, name, kg: name === e.name ? e.kg : (S.progress[name] ?? (toHome ? 0 : (SESSIONS[day.name]?.ex.find(x => x.name === name)?.kg ?? 0))) }; }); save(); render(); },
+  rpe: d => { const a = S.active; a.rpe = a.rpe === +d.v ? 0 : +d.v; save(); render(); },
+  skipWarm: () => { const a = S.active, e = S.week.days[a.dayIdx].ex[a.exIdx]; a.warm = warmSets(e, a.kg).length; a.resting = false; save(); render(); },
+  plates: async () => { const a = S.active; const bar = S.prefs.bar || 20; const P = plates(a.kg, bar); await ask({ title: `${a.kg} kg · 配片`, note: P ? (P.out.length ? `杠 ${bar}kg，每边：${P.out.join(' + ')} kg${P.rest ? `（还差 ${P.rest}kg 无法凑齐）` : ''}` : `空杆 ${bar}kg${P.rest ? `，还差每边 ${P.rest}kg` : ''}`) : `重量低于杠铃自重 ${bar}kg`, fields: [{ key: 'bar', label: '杠铃自重', type: 'select', options: ['20', '15', '10'], value: String(bar) }], okLabel: '好' }).then(v => { if (v && v.bar) { S.prefs.bar = +v.bar; save(); } }); },
   kg: d => { const a = S.active; a.kg = Math.max(0, +(a.kg + (+d.d)).toFixed(1)); save(); render(); },
   reps: d => { const a = S.active; a.reps = Math.max(1, a.reps + (+d.d)); save(); render(); },
   completeSet, finish: async () => { if (S.active.sets.length === 0) { if (!await confirmAsk('放弃这次训练？', '还没记录任何一组。', '放弃', true)) return; S.active = null; save(); lockScreen(false); go('home'); return; } finishWorkout(); },
-  skipEx: () => { const a = S.active, d = S.week.days[a.dayIdx]; if (a.exIdx >= d.ex.length - 1) { finishWorkout(); return; } const n = d.ex[a.exIdx + 1], last = lastSetOf(n.name); a.exIdx++; a.setIdx = 0; a.kg = last && last.kg >= n.kg ? last.kg : n.kg; a.reps = n.reps; a.resting = false; save(); render(); },
+  skipEx: () => { const a = S.active, d = S.week.days[a.dayIdx]; if (a.exIdx >= d.ex.length - 1) { finishWorkout(); return; } const n = d.ex[a.exIdx + 1], last = lastSetOf(n.name); a.exIdx++; a.setIdx = 0; a.warm = 0; a.rpe = 0; a.kg = last && last.kg >= n.kg ? last.kg : n.kg; a.reps = n.reps; a.resting = false; save(); render(); },
   startRest: () => { const a = S.active, e = S.week.days[a.dayIdx].ex[a.exIdx]; U.anim.add('rest'); a.resting = true; a.restStart = Date.now(); a.restEnd = Date.now() + restFor(e.name) * 1000; save(); render(); },
   endRest: () => { S.active.resting = false; save(); render(); },
   restAdd: d => { S.active.restEnd += (+d.s) * 1000; save(); render(); },
@@ -699,7 +742,10 @@ const A = {
   retryRecog: () => { const c = U.camera; recognize(c.photo, c.hint || ''); },
   logResult: () => { const r = U.result; const items = r.items.map(it => { const m = itemMacros(it); const mem = S.foodMemory[it.n] || { count: 0 }; S.foodMemory[it.n] = { grams: it.grams, per100: it.per100, count: mem.count + 1, last: today() }; return { n: it.n, u: `${it.grams}g`, ...m }; });
     addMeal(r.label, items); U.result = null; go('food'); toast(`已记入${r.label} · 今日剩余 ${fmt(targets().kcal - consumedOf(today()))} kcal`, 2600); },
-  delMeal: async d => { const m = mealsOf(today())[+d.i]; if (!await confirmAsk('删除这条记录？', `${m.time} ${m.label} · ${m.desc} · ${m.kcal} kcal`, '删除', true)) return; S.meals[today()].splice(+d.i, 1); save(); render(); },
+  delMeal: async d => { const m = mealsOf(U.foodDate)[+d.i]; if (!await confirmAsk('删除这条记录？', `${m.time} ${m.label} · ${m.desc} · ${m.kcal} kcal`, '删除', true)) return; S.meals[U.foodDate].splice(+d.i, 1); save(); render(); },
+  foodDay: d => { const n = addDays(U.foodDate, +d.d); if (n > today()) return; U.foodDate = n; render(); },
+  quickAdd: d => { const f = S.recent[+d.i]; if (!f) return; addMeal(mealLabelByTime(), [{ n: f.n, u: f.u, k: f.k, p: f.p, c: f.c, f: f.f }], U.foodDate); render(); toast(`已记入 ${f.n} · ${f.k} kcal`); },
+  copyMeal: async () => { const y = addDays(U.foodDate, -1), ms = mealsOf(y); if (!ms.length) { toast('前一天没有记录'); return; } const i = await ask({ title: `复制 ${md(y)} 的记录`, options: ms.map((m, k) => ({ label: `${m.label} · ${m.desc}`, sub: `${m.kcal} kcal`, value: k })) }); if (i == null) return; const m = ms[i]; addMeal(m.label, (m.items && m.items.length ? m.items : [{ n: m.desc, u: '1 份', k: m.kcal, p: m.p, c: m.c, f: m.f }]).map(x => ({ n: x.n, u: x.u, k: x.k, p: x.p, c: x.c, f: x.f })), U.foodDate); render(); toast(`已复制${m.label} · ${m.kcal} kcal`); },
   openSearch: () => { open_('search', null); U.search = { query: '', picked: [], scanning: false, hit: null, label: U.camera?.label || mealLabelByTime(), focus: true }; if (U.screen === 'camera') { const f = U.camera?.from; U.camera = null; U.screen = f && f !== 'camera' ? f : 'food'; } render(); },
   closeSearch: () => { stopScan(); U.search = null; render(); },
   cycleSearchLabel: () => { const L = ['早餐', '午餐', '加餐', '晚餐']; U.search.label = L[(L.indexOf(U.search.label) + 1) % 4]; render(); },
@@ -722,12 +768,18 @@ const A = {
   // 底部面板
   sheetCancel: () => sheetClose(null),
   sheetOk: () => { const sh = U.sheet, vals = { ...(sh.vals || {}) }; (sh.fields || []).forEach(f => { if (f.type === 'select') { if (vals[f.key] == null) vals[f.key] = f.value; return; } const el = root.querySelector(`[data-sheet="${f.key}"]`); vals[f.key] = el ? el.value : f.value; }); if (sh.confirm && !sh.fields) { sheetClose(true); return; } for (const f of sh.fields || []) { if (f.type === 'number' && f.required !== false) { const n = +vals[f.key]; if (vals[f.key] === '' || !(n >= (f.min ?? -1e9) && n <= (f.max ?? 1e9))) { toast(`${f.label}：范围 ${f.min ?? ''}–${f.max ?? ''}`); return; } } } sheetClose(vals); },
-  sheetPick: d => { const o = U.sheet.options[+d.i]; sheetClose(o.value ?? o.label); },
+  sheetPick: d => { const o = U.sheet.options[+d.i]; sheetClose(o.value !== undefined ? o.value : o.label); },
   sheetSeg: d => { const vals = { ...(U.sheet.vals || {}) }; root.querySelectorAll('[data-sheet]').forEach(el => { vals[el.dataset.sheet] = el.value; }); vals[d.k] = d.v; U.sheet.vals = vals; render(); },
   // 我
   theme: d => { S.prefs.theme = d.v; save(); render(); },
   restMode: d => { S.prefs.restMode = d.v; save(); render(); },
   toggleCore: () => { S.profile.core = !S.profile.core; save(); render(); toast('点「重新生成本周计划」立即生效，否则下周生效', 2600); },
+  calib: async () => { const c = calibrate(); const T = targets();
+    if (!c.ok) { await ask({ title: '校准热量目标', note: `按 MacroFactor 的方法，用近 28 天「实际摄入 − 体重趋势变化」反推你真实的日常消耗。${c.reason}。继续记录几天再来。${S.calib ? `\n\n当前使用 ${c.reason ? '上次' : ''}实测值 ${fmt(S.calib.daily)}（${md(S.calib.at)} 校准）。` : ''}`, options: S.calib ? [{ label: '改回公式值', value: 'reset' }] : [] }).then(v => { if (v === 'reset') { S.calib = null; save(); render(); toast('已改回公式值'); } }); return; }
+    const v = await ask({ title: '校准热量目标', note: `近 ${c.span} 天：日均摄入 ${fmt(c.avgIn)} kcal，趋势体重 ${sign(c.dW)} kg（${c.n} 天有饮食记录）。反推日常消耗 ≈ ${fmt(c.daily)}，公式值 ${fmt(c.formula)}${c.raw !== c.daily ? '（原始值 ' + fmt(c.raw) + '，已限幅）' : ''}。采用后每日目标变为 ${fmt(Math.max(S.profile.sex === '男' ? 1500 : 1200, c.daily + ({ '减脂': -500, '增肌': 300, '保持健康': 0 }[S.profile.goal] || 0)))}。`, options: [{ label: `采用实测值 ${fmt(c.daily)}` , value: 'apply' }, ...(S.calib ? [{ label: '改回公式值', value: 'reset' }] : [])] });
+    if (v === 'apply') { S.calib = { daily: c.daily, at: c.at, n: c.n }; save(); render(); toast(`已采用 · 目标 ${fmt(targets().kcal)} kcal`); } else if (v === 'reset') { S.calib = null; save(); render(); toast('已改回公式值'); } },
+  toggleWarm: () => { S.prefs.warmup = !S.prefs.warmup; save(); render(); },
+  toggleRpe: () => { S.prefs.rpe = !S.prefs.rpe; save(); render(); },
   toggleSound: () => { S.prefs.sound = !S.prefs.sound; save(); render(); },
   cycle: d => { const c = cycles[d.k]; S.profile[d.k] = c[(c.indexOf(S.profile[d.k]) + 1) % c.length]; save(); render(); if (d.k === 'days' || d.k === 'place' || d.k === 'level') toast('下周生效；要立即生效点「重新生成本周计划」', 2600); },
   editNum: async d => { const [label, min, max] = numFields[d.k]; const cur = d.k === 'restSec' ? S.prefs.restSec : S.profile[d.k]; const v = await ask({ title: label, fields: [{ key: 'v', label, type: 'number', value: cur, min, max, step: d.k === 'target' ? 0.1 : 1 }], okLabel: '保存' }); if (!v) return; const n = +v.v; if (d.k === 'restSec') S.prefs.restSec = n; else S.profile[d.k] = n; save(); render(); },

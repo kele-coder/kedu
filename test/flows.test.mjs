@@ -45,10 +45,15 @@ ok(KD.S.week.days[tIdx].ex.length > 0, '今天有训练');
 act('startSel'); ok(KD.U.screen === 'workout' && KD.S.active, '进入训练中'); ok($('#app').dataset.theme === 'dark', '训练中自动深色');
 const plannedSets = KD.S.week.days[tIdx].ex.reduce((a, e) => a + e.sets, 0);
 act('kg', e => e.dataset.d === '2.5'); const kg0 = KD.S.active.kg; ok(kg0 === KD.S.week.days[tIdx].ex[0].kg + 2.5, '重量 +2.5');
-act('completeSet'); ok(KD.S.active.sets.length === 1 && KD.S.active.resting === true, '完成一组后自动进入休息倒计时');
+ok(text().includes('热身 1 / 2'), '≥30kg 主项先出热身组');
+act('completeSet'); ok(KD.S.active.warm === 1 && KD.S.active.sets.length === 0 && KD.S.active.resting, '热身组不计入正式记录，短休息');
+act('endRest'); act('skipWarm'); ok(text().includes('第 1 组'), '跳过热身 → 第 1 组');
+act('rpe', e => e.dataset.v === '8'); ok(KD.S.active.rpe === 8, 'RPE 8');
+act('plates'); ok(!!KD.U.sheet && KD.U.sheet.title.includes('配片') && KD.U.sheet.note.includes('每边'), '配片计算：' + KD.U.sheet.note); act('sheetCancel'); await tick();
+act('completeSet'); ok(KD.S.active.sets.length === 1 && KD.S.active.sets[0].rpe === 8 && KD.S.active.resting === true, '完成一组（含 RPE）后自动进入休息倒计时');
 act('restAdd'); ok(KD.S.active.restEnd > Date.now() + 100000, '+30s');
 act('endRest'); ok(!KD.S.active.resting, '跳过休息');
-KD.S.active.startedAt -= 40*60*1000; let guard = 0; while (KD.U.screen === 'workout' && guard++ < 60) { act('completeSet'); if (KD.S.active && KD.S.active.resting) act('endRest'); }
+KD.S.active.startedAt -= 40*60*1000; let guard = 0; while (KD.U.screen === 'workout' && guard++ < 80) { if ($$('[data-act="skipWarm"]').length) act('skipWarm'); act('completeSet'); if (KD.S.active && KD.S.active.resting) act('endRest'); }
 ok(KD.U.screen === 'summary', '训练完成 → 总结页'); ok(text().includes(`${plannedSets} / ${plannedSets}`), '完成组数 ' + plannedSets);
 const log = Object.values(KD.S.logs)[0]; ok(log && log.done && log.burn > 0, '日志已记录，消耗 ' + log.burn);
 const prog = Object.keys(KD.S.progress); ok(prog.length > 0, '渐进超负荷写入 progress: ' + prog.slice(0,3).join(','));
@@ -64,7 +69,10 @@ act('customFood'); ok(!!KD.U.sheet, '自定义食物面板'); await sheetFill({ 
 ok(KD.S.customFoods[0] && KD.S.customFoods[0].k === 333, '自定义食物');
 act('logPicked'); ok(KD.U.screen === 'food' && Object.values(KD.S.meals)[0].length === 1 && Object.values(KD.S.meals)[0][0].kcal === 498, '记入一餐 498 kcal');
 ok(text().includes('498'), '饮食页显示摄入');
-act('delMeal'); ok(!!KD.U.sheet && KD.U.sheet.confirm, '删除确认面板'); act('sheetOk'); await tick(); await tick(); ok(Object.values(KD.S.meals)[0].length === 0, '删除餐');
+ok($$('[data-act="quickAdd"]').length >= 2, '常吃 chips 出现'); act('quickAdd'); ok(Object.values(KD.S.meals)[0].length === 2, '常吃一键记入');
+act('foodDay', e => e.dataset.d === '-1'); ok(text().includes('这天没有记录'), '切到昨天：空'); act('quickAdd'); ok(Object.keys(KD.S.meals).length === 2, '在昨天视图下记入 → 存到昨天');
+act('foodDay', e => e.dataset.d === '1'); act('copyMeal'); ok(KD.U.sheet && KD.U.sheet.options.length === 1, '复制前一天：列出昨天的 1 条'); act('sheetPick'); await tick(); await tick(); ok(Object.values(KD.S.meals).find(m => m.length === 3), '复制成功 → 今天 3 条');
+act('delMeal'); act('sheetOk'); await tick(); await tick(); act('delMeal'); ok(!!KD.U.sheet && KD.U.sheet.confirm, '删除确认面板'); act('sheetOk'); await tick(); await tick(); act('delMeal'); act('sheetOk'); await tick(); await tick(); ok(Object.values(KD.S.meals)[0].length === 0, '删除餐');
 
 // 4b. 识别结果页（构造数据，不走网络）
 
@@ -94,12 +102,19 @@ window.eval(`KD.S.profile.level='老手'; KD.S.profile.days=6;`); act('openWeekl
 { const wk = KD.S.nextWeek.days.filter(d => d.ex.length); const d = wk[0]; ok(wk.length === 6 && d.ex[0].sets >= 5 && !d.name.startsWith('新手'), '老手 6 天：主项加 1 组 · ' + (d && d.name + ' ' + d.ex[0].name + ' ' + d.ex[0].sets + '组')); }
 window.eval(`KD.S.profile.level='进阶'; KD.S.profile.days=5; KD.S.nextWeek=null;`);
 
+// 5c. 热量校准（数据不足 → 说明原因）
+act('go', e => e.dataset.to === 'profile'); act('calib'); ok(!!KD.U.sheet && KD.U.sheet.note.includes('需要'), '校准：数据不足给出原因 · ' + KD.U.sheet.note.slice(0, 40)); act('sheetOk'); await tick();
+// 造 28 天数据：每天摄入 1800，体重线性 -0.1/天 → 实测消耗 ≈ 1800 + 770 = 2570（限幅到公式 1.4 倍以内）
+window.eval(`(() => { const t = new Date(); for (let i = 27; i >= 0; i--) { const d = new Date(t); d.setDate(t.getDate() - i); const k = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); KD.S.meals[k] = [{ time: '08:00', label: '早餐', desc: 'x', kcal: 900, p: 40, c: 100, f: 30 }, { time: '18:00', label: '晚餐', desc: 'y', kcal: 900, p: 40, c: 100, f: 30 }]; if (i % 2 === 0) KD.S.weights.push({ date: k, kg: 75 - (27 - i) * 0.1, bf: 0 }); } KD.S.weights.sort((a, b) => a.date < b.date ? -1 : 1); KD.save(); })()`);
+act('calib'); ok(!!KD.U.sheet && KD.U.sheet.options.some(o => o.value === 'apply'), '校准：数据够了给出采用选项 · ' + KD.U.sheet.note.slice(0, 60)); act('sheetPick', e => e.textContent.includes('采用')); await tick(); await tick();
+ok(KD.S.calib && KD.S.calib.daily > 0, '已采用实测消耗 ' + (KD.S.calib && KD.S.calib.daily)); window.eval('KD.S.calib = null; KD.save();');
+
 // 6. 我 · 设置
 act('go', e => e.dataset.to === 'profile'); ok(text().includes('Mifflin') || text().includes('日常消耗'), '个人页');
 act('theme', e => e.dataset.v === 'dark'); ok($('#app').dataset.theme === 'dark', '全局深色');
 act('restMode', e => e.dataset.v === 'manual'); ok(KD.S.prefs.restMode === 'manual', '手动休息模式');
 act('editNum', e => e.dataset.k === 'kcalOverride'); await sheetFill({ v: 2000 }); ok(text().includes('2,000 kcal · 手动'), '手动热量目标');
 // 持久化
-const saved = JSON.parse(window.localStorage.getItem('kedu.v1')); ok(saved.onboarded && saved.weights.length === 1 && saved.profile.kcalOverride === 2000, 'localStorage 持久化');
+const saved = JSON.parse(window.localStorage.getItem('kedu.v1')); ok(saved.onboarded && saved.weights.length >= 1 && saved.profile.kcalOverride === 2000, 'localStorage 持久化');
 console.log(fails ? `\n${fails} 项失败` : '\n全部通过');
 process.exit(fails ? 1 : 0);

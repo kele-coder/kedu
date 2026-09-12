@@ -23,7 +23,7 @@ ok(KD.S.onboarded && KD.S.week.days.filter(d => d.ex.length).length === 4, '4 �
 const tIdx = KD.S.week.days.findIndex(d => d.date === (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; })());
 if (!KD.S.week.days[tIdx].ex.length) { w.eval(`KD.U.selDay=${tIdx}; const el=document.createElement('div'); el.dataset.act='addSession'; document.getElementById('app').appendChild(el); el.click();`); w.eval(`[...document.querySelectorAll('[data-act="sheetPick"]')].find(e => e.textContent.startsWith('上肢')).click()`); await new Promise(r => setTimeout(r, 5)); }
 w.eval(`KD.U.selDay=${tIdx}; const el=document.createElement('div'); el.dataset.act='startSel'; document.getElementById('app').appendChild(el); el.click();`);
-w.eval(`document.querySelector('[data-act="completeSet"]').click()`);
+w.eval(`const sw = document.querySelector('[data-act="skipWarm"]'); if (sw) sw.click(); document.querySelector('[data-act="completeSet"]').click()`);
 ok(KD.S.active && KD.S.active.sets.length === 1, '训练中已记 1 组');
 const snapshot = w.localStorage.getItem('kedu.v1');
 
