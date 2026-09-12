@@ -536,7 +536,7 @@ function rProfile() {
     ${row('导入数据', '选择文件 ›', 'importData')}
     ${row('重新走一遍引导', '›', 'restart')}
     ${row('清空全部数据', '›', 'wipe')}
-    <div class="muted" style="font-size:11px;padding:16px 0 24px" data-act="reloadApp">刻度 v11 · 数据只存在这台手机的浏览器里 · 点此检查更新</div>
+    <div class="muted" style="font-size:11px;padding:16px 0 24px" data-act="reloadApp">刻度 v12 · 数据只存在这台手机的浏览器里 · 点此检查更新</div>
   </div>${nav()}</div>`;
 }
 
